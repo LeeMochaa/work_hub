@@ -110,14 +110,13 @@
           }
         },
         "multitenancy": {
-          "app_url": "http://localhost:4004"
+          "app_url": "https://work_hub-saas.cfapps.us10-001.hana.ondemand.com"
         }
       },
       "[production]": {
         "db": "hana",
         "auth": "xsuaa"
-      },
-      "destinations": true
+      }
     }
   }
 }
