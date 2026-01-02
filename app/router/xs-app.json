@@ -3,7 +3,7 @@
   "authenticationMethod": "route",
   "routes": [
     {
-      "source": "^(/work_hub_app)?/(auth|odata)(/.*)?$",
+      "source": "^(/work_hub_app)?/(auth|odata|api)(/.*)?$",
       "target": "/$2$3",
       "destination": "work_hub-srv",
       "authenticationType": "xsuaa",

@@ -166,18 +166,48 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
       if (logoFile) {
         setUploadingLogo(true);
         try {
-          const formData = new FormData();
-          formData.append('logo', logoFile);
           const apiUrl = process.env.NODE_ENV === 'production'
             ? '/api/logo'
             : 'http://localhost:4004/api/logo';
+          
+          // CSRF 토큰 가져오기 (GET 요청)
+          let csrfToken = null;
+          try {
+            const csrfResponse = await fetch(apiUrl, {
+              method: 'GET',
+              credentials: 'include',
+              headers: {
+                'X-CSRF-Token': 'Fetch'
+              }
+            });
+            csrfToken = csrfResponse.headers.get('x-csrf-token');
+          } catch (csrfErr) {
+            console.warn('CSRF 토큰 가져오기 실패:', csrfErr);
+            // CSRF 토큰이 없어도 시도 (서버에서 csrfProtection: false로 설정되어 있을 수 있음)
+          }
+          
+          const formData = new FormData();
+          formData.append('logo', logoFile);
+          
+          const headers = {};
+          if (csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+          }
+          
           const response = await fetch(apiUrl, {
             method: 'POST',
             body: formData,
-            credentials: 'include'  // 쿠키 포함 (인증용)
+            credentials: 'include',  // 쿠키 포함 (인증용)
+            headers: headers
           });
+          
           if (!response.ok) {
-            const error = await response.json();
+            let error;
+            try {
+              error = await response.json();
+            } catch (e) {
+              error = { error: `업로드 실패: ${response.status} ${response.statusText}` };
+            }
             throw new Error(error.error || '업로드 실패');
           }
           const result = await response.json();
