@@ -26,12 +26,7 @@ const renderTemplate = (template, variables) => {
   return rendered;
 };
 
-// 포트를 강제로 4004로 고정
-if (process.env.PORT) {
-  process.env.PORT = '4004';
-} else {
-  process.env.PORT = '4004';
-}
+process.env.PORT = process.env.PORT || '4004';  // ✅ 강제 덮어쓰기 X
 
 // 정적 리소스 디렉토리 설정 (app/router/resources/images/)
 const resourcesDir = path.resolve(__dirname, '..', 'app', 'router', 'resources');

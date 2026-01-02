@@ -118,10 +118,6 @@
         "auth": "xsuaa"
       },
       "destinations": true
-    },
-    "profile": "hybrid",
-    "server": {
-      "port": 4004
     }
   }
 }
