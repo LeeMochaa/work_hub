@@ -23,7 +23,6 @@ modules:
       memory: 512M
     requires:
       - name: work_hub-db
-      - name: work_hub-auth
       - name: work_hub-sm
       - name: work_hub-registry
       - name: app-api
