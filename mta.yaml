@@ -29,6 +29,10 @@ modules:
       - name: app-api
         properties:
           SUBSCRIPTION_URL: ~{app-protocol}://\${tenant_subdomain}-~{app-uri}
+      - name: work_hub-auth
+        group: destinations
+        properties:
+          xsappname: work_hub-${org}-${space}
 
     provides:
       - name: srv-api
