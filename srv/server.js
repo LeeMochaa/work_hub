@@ -248,12 +248,75 @@ cds.on('bootstrap', (app) => {
       }
 
       // 권한 체크 (ADMIN만 업로드 가능)
-      const userRoles = req.user?.roles || [];
-      const isAdmin = userRoles.includes('ADMIN') || userRoles.includes('SYSADMIN');
+      const userRoles = req.user?.roles || {};
+      
+      // 실제 xsappname 가져오기
+      let actualXsappname = null;
+      try {
+        if (req.user?.authInfo?.services?.[0]?.credentials?.xsappname) {
+          actualXsappname = req.user.authInfo.services[0].credentials.xsappname;
+        } else if (process.env.VCAP_SERVICES) {
+          const vcapServices = JSON.parse(process.env.VCAP_SERVICES);
+          const xsuaaService = vcapServices['xsuaa'] || vcapServices['xsuaa-application'] || [];
+          if (xsuaaService.length > 0 && xsuaaService[0].credentials?.xsappname) {
+            actualXsappname = xsuaaService[0].credentials.xsappname;
+          }
+        }
+      } catch (e) {
+        console.warn('[Upload] xsappname 추출 실패:', e.message);
+      }
+      
+      // req.user.is() 메서드 사용 (XSUAA 역할 컬렉션 체크) - 우선순위 1
+      const hasRole = (roleName) => {
+        if (req.user?.is && typeof req.user.is === 'function') {
+          return req.user.is(roleName);
+        }
+        return false;
+      };
+      
+      // scope 체크 (req.user.roles 객체) - 우선순위 2
+      const hasScope = (scopeName) => {
+        // 1. 실제 xsappname.Administrator 형태
+        if (actualXsappname) {
+          const actualScope = `${actualXsappname}.${scopeName}`;
+          if (userRoles[actualScope]) return true;
+        }
+        // 2. $XSAPPNAME.Administrator 형태
+        const xsappnameScope = `$XSAPPNAME.${scopeName}`;
+        if (userRoles[xsappnameScope]) return true;
+        // 3. work_hub.Administrator 형태 (fallback)
+        const appScope = `work_hub.${scopeName}`;
+        if (userRoles[appScope]) return true;
+        // 4. Administrator만 (직접 키로 체크)
+        if (userRoles[scopeName]) return true;
+        return false;
+      };
+      
+      const isAdmin = hasRole('Administrator') || hasRole('SYSADMIN') || 
+                      hasScope('Administrator') || hasScope('SYSADMIN');
+      
+      console.log('🔍 [Upload] 권한 체크:', {
+        'req.user.is function exists': typeof (req.user?.is) === 'function',
+        'actualXsappname': actualXsappname || 'N/A',
+        'hasRole(Administrator)': hasRole('Administrator'),
+        'hasRole(SYSADMIN)': hasRole('SYSADMIN'),
+        'hasScope(Administrator)': hasScope('Administrator'),
+        'hasScope(SYSADMIN)': hasScope('SYSADMIN'),
+        'isAdmin': isAdmin,
+        'req.user.roles': JSON.stringify(userRoles)
+      });
       
       if (!isAdmin) {
         return res.status(403).json({ 
-          error: '권한이 없습니다. ADMIN 권한이 필요합니다.' 
+          error: '권한이 없습니다. ADMIN 권한이 필요합니다.',
+          debug: {
+            hasRoleAdministrator: hasRole('Administrator'),
+            hasRoleSYSADMIN: hasRole('SYSADMIN'),
+            hasScopeAdministrator: hasScope('Administrator'),
+            hasScopeSYSADMIN: hasScope('SYSADMIN'),
+            actualXsappname: actualXsappname,
+            userRoles: userRoles
+          }
         });
       }
 

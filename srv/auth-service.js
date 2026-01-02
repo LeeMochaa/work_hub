@@ -280,11 +280,27 @@ module.exports = cds.service.impl(async function () {
         return { id: safeId, name: safeName, tenant, email, raw };
     };
 
-    const getRoles = (req) => {
-        const roles = [];
+    // 공통 권한 체크 헬퍼 함수
+    const createRoleChecker = (req) => {
         const userRoles = req.user?.roles || {};
         
-        // req.user.is() 메서드 사용 (XSUAA 역할 컬렉션 체크)
+        // 실제 xsappname 가져오기 (VCAP_SERVICES 또는 req.user.authInfo에서)
+        let actualXsappname = null;
+        try {
+            if (req.user?.authInfo?.services?.[0]?.credentials?.xsappname) {
+                actualXsappname = req.user.authInfo.services[0].credentials.xsappname;
+            } else if (process.env.VCAP_SERVICES) {
+                const vcapServices = JSON.parse(process.env.VCAP_SERVICES);
+                const xsuaaService = vcapServices['xsuaa'] || vcapServices['xsuaa-application'] || [];
+                if (xsuaaService.length > 0 && xsuaaService[0].credentials?.xsappname) {
+                    actualXsappname = xsuaaService[0].credentials.xsappname;
+                }
+            }
+        } catch (e) {
+            console.warn('[Auth] xsappname 추출 실패:', e.message);
+        }
+        
+        // req.user.is() 메서드 사용 (XSUAA 역할 컬렉션 체크) - 우선순위 1
         const hasRole = (roleName) => {
             if (req.user?.is && typeof req.user.is === 'function') {
                 return req.user.is(roleName);
@@ -292,12 +308,31 @@ module.exports = cds.service.impl(async function () {
             return false;
         };
 
-        // scope 이름으로 체크 (req.user.roles 객체)
+        // scope 체크 (req.user.roles 객체) - 우선순위 2
         const hasScope = (scopeName) => {
+            // 1. 실제 xsappname.Administrator 형태
+            if (actualXsappname) {
+                const actualScope = `${actualXsappname}.${scopeName}`;
+                if (userRoles[actualScope]) return true;
+            }
+            // 2. $XSAPPNAME.Administrator 형태
             const xsappnameScope = `$XSAPPNAME.${scopeName}`;
+            if (userRoles[xsappnameScope]) return true;
+            // 3. work_hub.Administrator 형태 (fallback)
             const appScope = `work_hub.${scopeName}`;
-            return !!(userRoles[xsappnameScope] || userRoles[appScope] || userRoles[scopeName]);
+            if (userRoles[appScope]) return true;
+            // 4. Administrator만 (직접 키로 체크 - req.user.roles에 이미 변환되어 있을 수 있음)
+            if (userRoles[scopeName]) return true;
+            return false;
         };
+
+        return { hasRole, hasScope, actualXsappname };
+    };
+
+    const getRoles = (req) => {
+        const roles = [];
+        const userRoles = req.user?.roles || {};
+        const { hasRole, hasScope } = createRoleChecker(req);
 
         // 역할 체크 (req.user.is() 우선, 없으면 scope 체크)
         ['SYSADMIN', 'Administrator', 'Leader', 'User'].forEach(r => {
@@ -314,26 +349,8 @@ module.exports = cds.service.impl(async function () {
     };
 
     const getRoleFlags = (req) => {
-        // req.user.roles 객체에서 직접 체크
         const roles = req.user?.roles || {};
-        
-        // req.user.is() 메서드 사용 (XSUAA 역할 컬렉션 체크) - 우선순위 높음
-        const hasRole = (roleName) => {
-            if (req.user?.is && typeof req.user.is === 'function') {
-                return req.user.is(roleName);
-            }
-            return false;
-        };
-        
-        // scope 체크 (req.user.roles 객체)
-        const hasScope = (scopeName) => {
-            // 1. $XSAPPNAME.Administrator 형태
-            const xsappnameScope = `$XSAPPNAME.${scopeName}`;
-            // 2. work_hub.Administrator 형태 (실제 앱 이름)
-            const appScope = `work_hub.${scopeName}`;
-            // 3. Administrator만 (fallback)
-            return !!(roles[xsappnameScope] || roles[appScope] || roles[scopeName]);
-        };
+        const { hasRole, hasScope, actualXsappname } = createRoleChecker(req);
         
         const flags = {
             SYSADMIN: hasRole('SYSADMIN') || hasScope('SYSADMIN'),
@@ -345,6 +362,7 @@ module.exports = cds.service.impl(async function () {
         console.log('🔍 [Auth] Role Detection Results:');
         console.log('  - Role flags:', JSON.stringify(flags, null, 2));
         console.log('  - User roles object:', JSON.stringify(roles, null, 2));
+        console.log('  - Actual xsappname:', actualXsappname || 'N/A');
         console.log('  - req.user.is() check results:', {
             SYSADMIN: hasRole('SYSADMIN'),
             Administrator: hasRole('Administrator'),
