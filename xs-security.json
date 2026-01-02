@@ -1,0 +1,77 @@
+{
+  "xsappname": "work_hub",
+  "tenant-mode": "shared",
+  "description": "Security profile for WorkHub SaaS App",
+  "scopes": [
+    {
+      "name": "$XSAPPNAME.mtcallback",
+      "description": "구독(Subscription) 처리를 위해 SaaS Registry가 호출할 때 필요한 권한 (필수)",
+      "grant-as-authority-to-apps": [
+        "$XSAPPNAME(application,sap-provisioning,tenant-onboarding)"
+      ]
+    },
+    {
+      "name": "$XSAPPNAME.SYSADMIN",
+      "description": "시스템 관리자 권한 (배포 관리자, 마스터 권한)"
+    },
+    {
+      "name": "$XSAPPNAME.Administrator",
+      "description": "앱 관리자 권한 (고객사 내 관리자, 코드/설정 관리)"
+    },
+    {
+      "name": "$XSAPPNAME.Leader",
+      "description": "리더 권한 (프로젝트 리드, 팀 관리)"
+    },
+    {
+      "name": "$XSAPPNAME.User",
+      "description": "일반 사용자 권한 (자신의 프로젝트 및 업무 접근)"
+    }
+  ],
+  "role-templates": [
+    {
+      "name": "WorkHub_SYSADMIN",
+      "description": "WorkHub 시스템 관리자 (배포 관리자)",
+      "scope-references": [
+        "$XSAPPNAME.SYSADMIN",
+        "$XSAPPNAME.Administrator",
+        "$XSAPPNAME.Leader",
+        "$XSAPPNAME.User"
+      ]
+    },
+    {
+      "name": "WorkHub_Administrator",
+      "description": "WorkHub 앱 관리자 (고객사 관리자)",
+      "scope-references": [
+        "$XSAPPNAME.Administrator",
+        "$XSAPPNAME.Leader",
+        "$XSAPPNAME.User"
+      ]
+    },
+    {
+      "name": "WorkHub_Leader",
+      "description": "WorkHub 리더 (프로젝트 리드)",
+      "scope-references": [
+        "$XSAPPNAME.Leader",
+        "$XSAPPNAME.User"
+      ]
+    },
+    {
+      "name": "WorkHub_User",
+      "description": "WorkHub 일반 사용자",
+      "scope-references": [
+        "$XSAPPNAME.User"
+      ]
+    }
+  ],
+  "oauth2-configuration": {
+    "token-validity": 3600,
+    "redirect-uris": [
+      "https://*.hana.ondemand.com/**",
+      "https://**.cfapps.us10-001.hana.ondemand.com/**",
+      "https://api.cf.us10-001.hana.ondemand.com/**",
+      "http://localhost:4004/**",
+      "http://localhost:3000/**"
+    ]
+  }
+}
+

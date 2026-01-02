@@ -1,0 +1,128 @@
+{
+  "name": "work_hub",
+  "version": "1.0.0",
+  "description": "WorkHub - 고객사별 프로젝트 및 업무 관리 시스템",
+  "dependencies": {
+    "@cap-js/hana": "^2",
+    "@sap/cds": "^9",
+    "@sap/cds-mtxs": "^3.5.1",
+    "@sap/xsenv": "^6.0.0",
+    "@sap/xssec": "^4",
+    "express": "^4",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^7.0.10"
+  },
+  "devDependencies": {
+    "@cap-js/sqlite": "^2",
+    "@sap/cds-dk": "^9",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.4.5"
+  },
+  "scripts": {
+    "start": "cds-serve",
+    "watch": "cross-env PORT=4004 cds watch",
+    "build": "cds build --production"
+  },
+  "private": true,
+  "cds": {
+    "requires": {
+      "db": {
+        "kind": "hana",
+        "pool": {
+          "min": 0,
+          "max": 10,
+          "acquireTimeoutMillis": 60000
+        }
+      },
+      "auth": "xsuaa",
+      "multitenancy": {
+        "app_url": "https://work_hub-saas.cfapps.us10-001.hana.ondemand.com"
+      },
+      "[development]": {
+        "db": "sqlite",
+        "auth": {
+          "kind": "mocked-auth",
+          "users": {
+            "SYSADMIN": {
+              "id": "SYSADMIN",
+              "password": "SYSADMIN",
+              "roles": [
+                "$XSAPPNAME.SYSADMIN",
+                "$XSAPPNAME.Administrator",
+                "$XSAPPNAME.Leader",
+                "$XSAPPNAME.User"
+              ],
+              "attr": {
+                "email": "sysadmin@workhub.com",
+                "givenName": "System",
+                "familyName": "Admin"
+              }
+            },
+            "ADMIN": {
+              "id": "ADMIN",
+              "password": "ADMIN",
+              "roles": [
+                "$XSAPPNAME.Administrator",
+                "$XSAPPNAME.Leader",
+                "$XSAPPNAME.User"
+              ],
+              "attr": {
+                "email": "admin@workhub.com",
+                "givenName": "Admin",
+                "familyName": "User"
+              }
+            },
+            "LEADER": {
+              "id": "LEADER",
+              "password": "LEADER",
+              "roles": [
+                "$XSAPPNAME.Leader",
+                "$XSAPPNAME.User"
+              ],
+              "attr": {
+                "email": "leader@workhub.com",
+                "givenName": "Leader",
+                "familyName": "User"
+              }
+            },
+            "USER": {
+              "id": "USER",
+              "password": "USER",
+              "roles": [
+                "$XSAPPNAME.User"
+              ],
+              "attr": {
+                "email": "user@workhub.com",
+                "givenName": "Normal",
+                "familyName": "User"
+              }
+            },
+            "NOBODY": {
+              "id": "NOBODY",
+              "password": "NOBODY",
+              "roles": [],
+              "attr": {
+                "email": "nobody@workhub.com",
+                "givenName": "No",
+                "familyName": "Body"
+              }
+            }
+          }
+        },
+        "multitenancy": {
+          "app_url": "http://localhost:4004"
+        }
+      },
+      "[production]": {
+        "db": "hana",
+        "auth": "xsuaa"
+      },
+      "destinations": true
+    },
+    "profile": "hybrid",
+    "server": {
+      "port": 4004
+    }
+  }
+}
+

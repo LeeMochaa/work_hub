@@ -1,0 +1,5 @@
+SCHEDULER JOB "workhub.cleanup_users_30d_job"
+CRON '* * * * 18 0 0'
+ENABLE 
+PROCEDURE "workhub::cleanup_users_30d";
+

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>환경변수 설정 확인</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px;">
+  <div style="background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2); text-align: center; max-width: 500px; width: 100%; margin: 0 auto;">
+    <div style="font-size: 64px; margin-bottom: 20px;">⚠️</div>
+    <h1 style="color: #333; margin-bottom: 15px; font-size: 28px; font-weight: 600; margin-top: 0;">환경변수 설정 확인</h1>
+    <p style="color: #666; line-height: 1.8; margin-bottom: 10px;">아래 정보를 확인한 후, 환경변수 설정이 완료되었다면 버튼을 클릭해주세요.</p>
+    
+    <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; text-align: left; border-left: 4px solid #667eea;">
+      <strong style="color: #495057; display: inline-block; min-width: 120px;">테넌트 ID:</strong> {{tenant}}<br>
+      <strong style="color: #495057; display: inline-block; min-width: 120px;">회사명:</strong> {{companyName}}<br>
+      <strong style="color: #495057; display: inline-block; min-width: 120px;">설정 제출 시점:</strong> {{mailSentAt}}
+    </div>
+
+    <div style="background: #fff3cd; border: 1px solid #ffc107; color: #856404; padding: 15px; border-radius: 6px; margin: 20px 0; font-size: 14px;">
+      ⚠️ BTP에서 환경변수 또는 user-provided service를 설정한 후에만 이 버튼을 클릭해주세요.
+    </div>
+
+    <div style="margin-top: 30px;">
+      <a href="{{completeUrl}}" style="padding: 14px 32px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; text-decoration: none; display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); margin-right: 15px;">✅ 환경변수 설정 완료</a>
+      <button onclick="window.close()" style="padding: 14px 32px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; background: #e9ecef; color: #495057; display: inline-block;">취소</button>
+    </div>
+  </div>
+</body>
+</html>

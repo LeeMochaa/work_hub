@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background: #f5f5f5;">
+    <div style="max-width: 700px; margin: 20px auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center;">
+            <h2 style="font-size: 24px; font-weight: 600; margin: 0;">🚀 WorkHub 테넌트 초기 설정 요청</h2>
+        </div>
+        <div style="padding: 30px;">
+            <div style="margin-bottom: 25px;">
+                <div style="font-weight: 600; color: #667eea; margin-bottom: 12px; font-size: 16px; border-bottom: 2px solid #667eea; padding-bottom: 8px;">📋 테넌트 정보</div>
+                <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #667eea; margin: 10px 0; border-radius: 4px;">
+                    <strong style="color: #495057;">테넌트 ID:</strong> {{tenant}}<br>
+                    <strong style="color: #495057;">회사명:</strong> {{companyName}}<br>
+                    <strong style="color: #495057;">제출자:</strong> {{userName}} ({{userEmail}})
+                </div>
+            </div>
+
+            <div style="margin-bottom: 25px;">
+                <div style="font-weight: 600; color: #667eea; margin-bottom: 12px; font-size: 16px; border-bottom: 2px solid #667eea; padding-bottom: 8px;">⚙️ 기본 설정</div>
+                <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #667eea; margin: 10px 0; border-radius: 4px;">
+                    <strong style="color: #495057;">타임존:</strong> {{timezone}}<br>
+                    <strong style="color: #495057;">언어:</strong> {{language}}<br>
+                    <strong style="color: #495057;">로고 URL:</strong> {{logoUrl}}
+                </div>
+            </div>
+
+            <div style="margin-bottom: 25px;">
+                <div style="font-weight: 600; color: #667eea; margin-bottom: 12px; font-size: 16px; border-bottom: 2px solid #667eea; padding-bottom: 8px;">📧 SMTP 설정</div>
+                <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #667eea; margin: 10px 0; border-radius: 4px;">
+                    <strong style="color: #495057;">서비스:</strong> {{smtpService}}<br>
+                    <strong style="color: #495057;">호스트:</strong> {{smtpHost}}<br>
+                    <strong style="color: #495057;">포트:</strong> {{smtpPort}}<br>
+                    <strong style="color: #495057;">보안 연결:</strong> {{smtpSecure}}<br>
+                    <strong style="color: #495057;">사용자:</strong> {{smtpUser}}<br>
+                    <strong style="color: #495057;">발신자:</strong> {{smtpFrom}}
+                </div>
+            </div>
+
+            <div style="margin-bottom: 25px;">
+                <div style="font-weight: 600; color: #667eea; margin-bottom: 12px; font-size: 16px; border-bottom: 2px solid #667eea; padding-bottom: 8px;">💻 BTP User-Provided Service 생성 명령어</div>
+                <div style="background: #1e1e1e; border-radius: 6px; margin: 15px 0; overflow: hidden;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background: #2d2d2d; border-bottom: 1px solid #404040;">
+                        <tr>
+                            <td style="padding: 12px 16px;"></td>
+                        </tr>
+                    </table>
+                    <div style="padding: 20px; overflow-x: auto;">
+                        <div style="color: #d4d4d4; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto;">{{cfCommand}}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin: 40px 0; padding: 30px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 8px;">
+                <p style="margin-bottom: 20px; color: #495057; font-size: 14px; line-height: 1.8;">
+                    위 설정을 바탕으로 BTP에서 환경 변수 또는 user-provided service를 설정한 후,<br>
+                    아래 버튼을 클릭하여 설정 완료를 확인해주세요.
+                </p>
+                <a href="{{confirmUrl}}" style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);">✅ 환경 변수 설정 완료</a>
+            </div>
+
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 12px; color: #999;">
+                <p>이 메일은 WorkHub 시스템에서 자동으로 발송되었습니다.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

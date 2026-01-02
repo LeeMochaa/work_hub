@@ -1,0 +1,20 @@
+{
+  "welcomeFile": "/index.html",
+  "authenticationMethod": "route",
+  "routes": [
+    {
+      "source": "^(/work_hub_app)?/(auth|odata)(/.*)?$",
+      "target": "/$2$3",
+      "destination": "srv-api",
+      "authenticationType": "xsuaa",
+      "csrfProtection": false
+    },
+    {
+      "source": "^(.*)$",
+      "target": "$1",
+      "localDir": "resources",
+      "authenticationType": "xsuaa"
+    }
+  ]
+}
+
