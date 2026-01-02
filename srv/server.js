@@ -26,45 +26,11 @@ const renderTemplate = (template, variables) => {
   return rendered;
 };
 
-process.env.PORT = process.env.PORT || '4004';  // ✅ 강제 덮어쓰기 X
+// PORT는 배포 환경에서 자동으로 설정되므로 여기서 고정하지 않음
 
-// 정적 리소스 디렉토리 설정 (app/router/resources/images/)
-const resourcesDir = path.resolve(__dirname, '..', 'app', 'router', 'resources');
-const imagesDir = path.join(resourcesDir, 'images', 'logos');
-
-// 디렉토리 생성 (없으면)
-if (!fs.existsSync(imagesDir)) {
-  fs.mkdirSync(imagesDir, { recursive: true });
-}
-
-// Multer 설정 (파일 업로드)
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, imagesDir);
-  },
-  filename: (req, file, cb) => {
-    // 파일명: tenant-id.확장자 (테넌트별 하나만 저장)
-    const tenant = req.tenant || req.user?.tenant || req.user?.attr?.zid || 'default';
-    const ext = path.extname(file.originalname);
-    const filename = `${tenant}${ext}`;
-    
-    // 기존 파일이 있으면 삭제
-    const filePath = path.join(imagesDir, filename);
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.unlinkSync(filePath);
-        console.log(`🗑️ [Upload] 기존 파일 삭제: ${filename}`);
-      } catch (err) {
-        console.warn(`⚠️ [Upload] 기존 파일 삭제 실패: ${err.message}`);
-      }
-    }
-    
-    cb(null, filename);
-  }
-});
-
+// Multer 설정 (메모리 스토리지 - BLOB 저장용)
 const upload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),  // 메모리에 저장 후 DB에 BLOB으로 저장
   limits: {
     fileSize: 5 * 1024 * 1024 // 5MB 제한
   },
@@ -81,6 +47,31 @@ const upload = multer({
     }
   }
 });
+
+// 테넌트 ID 추출 헬퍼 함수
+const getTenantId = (req) => {
+  // CAP 멀티테넌트에서 테넌트 ID 추출
+  // 1. req.tenant (CAP가 자동으로 설정)
+  if (req.tenant) {
+    return req.tenant;
+  }
+  // 2. cds.context.tenant (현재 컨텍스트)
+  if (cds.context?.tenant) {
+    return cds.context.tenant;
+  }
+  // 3. req.user에서 추출
+  if (req.user?.tenant) {
+    return req.user.tenant;
+  }
+  if (req.user?.attr?.zid) {
+    return req.user.attr.zid;
+  }
+  // 4. JWT 토큰에서 추출 시도
+  if (req.authInfo?.getIdentityZone) {
+    return req.authInfo.getIdentityZone();
+  }
+  return null;
+};
 
 cds.on('bootstrap', (app) => {
   app.use(bodyParser.json({ limit: '20mb' }));
@@ -246,8 +237,8 @@ cds.on('bootstrap', (app) => {
     }
   });
 
-  // 파일 업로드 엔드포인트
-  app.post('/api/upload-logo', upload.single('logo'), (req, res) => {
+  // 로고 업로드 엔드포인트 (ADMIN만 가능)
+  app.post('/api/logo', upload.single('logo'), async (req, res) => {
     try {
       // CORS 헤더 설정
       const origin = req.headers.origin;
@@ -256,27 +247,57 @@ cds.on('bootstrap', (app) => {
         res.setHeader('Access-Control-Allow-Credentials', 'true');
       }
 
+      // 권한 체크 (ADMIN만 업로드 가능)
+      const userRoles = req.user?.roles || [];
+      const isAdmin = userRoles.includes('ADMIN') || userRoles.includes('SYSADMIN');
+      
+      if (!isAdmin) {
+        return res.status(403).json({ 
+          error: '권한이 없습니다. ADMIN 권한이 필요합니다.' 
+        });
+      }
+
       if (!req.file) {
         return res.status(400).json({ error: '파일이 업로드되지 않았습니다.' });
       }
 
-      // 파일 URL 생성 (xs-app.json의 localDir: "resources" 설정에 따라)
-      const fileUrl = `/images/logos/${req.file.filename}`;
-      
-      console.log('✅ [Upload] 로고 파일 업로드 완료:', {
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        url: fileUrl
-      });
+      // 테넌트 ID 추출
+      const tenantId = getTenantId(req);
+      if (!tenantId) {
+        return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
+      }
 
+      const { SELECT, UPSERT } = cds.ql;
+      const TenantLogo = cds.entities['TenantLogo'];
+
+      // 테넌트 컨텍스트로 트랜잭션 생성 (테넌트별 DB 접근)
+      const tx = cds.transaction(req);
+
+      // 기존 로고가 있으면 업데이트, 없으면 생성
+      await tx.run(
+        UPSERT.into(TenantLogo).entries({
+          id: tenantId,
+          content: req.file.buffer,  // BLOB 데이터
+          contentType: req.file.mimetype,
+          filename: req.file.originalname,
+          size: req.file.size
+        })
+      );
+
+      console.log('✅ [Upload] 로고 업로드 완료 (DB 저장):', {
+        tenantId: tenantId,
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+        size: req.file.size
+      });
+      
       res.json({
         success: true,
-        url: fileUrl,
-        filename: req.file.filename
+        message: '로고가 성공적으로 업로드되었습니다.',
+        url: '/api/logo'  // 조회 URL
       });
     } catch (error) {
-      console.error('❌ [Upload] 파일 업로드 실패:', error);
+      console.error('❌ [Upload] 로고 업로드 실패:', error);
       
       // CORS 헤더 설정 (에러 응답에도)
       const origin = req.headers.origin;
@@ -286,6 +307,59 @@ cds.on('bootstrap', (app) => {
       }
       
       res.status(500).json({ error: error.message || '파일 업로드 중 오류가 발생했습니다.' });
+    }
+  });
+
+  // 로고 조회 엔드포인트 (테넌트별 동적 조회)
+  app.get('/api/logo', async (req, res) => {
+    try {
+      // 테넌트 ID 추출
+      const tenantId = getTenantId(req);
+      if (!tenantId) {
+        return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
+      }
+
+      const { SELECT } = cds.ql;
+      const TenantLogo = cds.entities['TenantLogo'];
+
+      // 테넌트 컨텍스트로 트랜잭션 생성 (테넌트별 DB 접근)
+      const tx = cds.transaction(req);
+
+      // 테넌트별 로고 조회
+      const logo = await tx.run(
+        SELECT.one.from(TenantLogo)
+          .where({ id: tenantId })
+      );
+
+      if (!logo || !logo.content) {
+        // 기본 로고 반환 (없으면 404 또는 기본 이미지)
+        // 여기서는 기본 로고가 없다고 가정하고 404 반환
+        // 필요시 기본 로고 파일을 읽어서 반환할 수 있음
+        return res.status(404).json({ 
+          error: '로고를 찾을 수 없습니다.',
+          useDefault: true
+        });
+      }
+
+      // BLOB 데이터를 이미지로 반환
+      res.setHeader('Content-Type', logo.contentType || 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=3600');  // 1시간 캐시
+      
+      // updatedAt이 있으면 ETag로 사용
+      if (logo.modifiedAt) {
+        const etag = `"${logo.modifiedAt.getTime()}"`;
+        res.setHeader('ETag', etag);
+        
+        // 클라이언트가 캐시된 버전을 가지고 있으면 304 반환
+        if (req.headers['if-none-match'] === etag) {
+          return res.status(304).end();
+        }
+      }
+
+      res.send(Buffer.from(logo.content));
+    } catch (error) {
+      console.error('❌ [Logo] 로고 조회 실패:', error);
+      res.status(500).json({ error: error.message || '로고 조회 중 오류가 발생했습니다.' });
     }
   });
 

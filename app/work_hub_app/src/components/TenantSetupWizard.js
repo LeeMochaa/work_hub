@@ -162,26 +162,27 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
     setError(null);
 
     try {
-      // 로고 파일이 있으면 최종 제출 시점에 업로드
-      let finalLogoUrl = companyLogoUrl;
-      if (logoFile && !companyLogoUrl) {
+      // 로고 파일이 있으면 최종 제출 시점에 업로드 (DB에 BLOB으로 저장)
+      if (logoFile) {
         setUploadingLogo(true);
         try {
           const formData = new FormData();
           formData.append('logo', logoFile);
           const apiUrl = process.env.NODE_ENV === 'production'
-            ? '/api/upload-logo'
-            : 'http://localhost:4004/api/upload-logo';
+            ? '/api/logo'
+            : 'http://localhost:4004/api/logo';
           const response = await fetch(apiUrl, {
             method: 'POST',
-            body: formData
+            body: formData,
+            credentials: 'include'  // 쿠키 포함 (인증용)
           });
           if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || '업로드 실패');
           }
           const result = await response.json();
-          finalLogoUrl = result.url;
+          // 로고는 이제 DB에 저장되므로 URL은 /api/logo로 고정
+          console.log('로고 업로드 완료:', result.message);
         } catch (err) {
           console.error('로고 업로드 실패:', err);
           setError(err.message || '로고 업로드 중 오류가 발생했습니다.');
@@ -195,7 +196,7 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
 
       const config = {
         companyName: companyName.trim(),
-        companyLogoUrl: finalLogoUrl || undefined,
+        companyLogoUrl: '/api/logo',  // DB에서 동적으로 조회하므로 고정 URL 사용
         timezone: timezone,
         language: language,
         adminEmail: adminEmail.trim()
