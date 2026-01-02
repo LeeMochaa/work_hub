@@ -132,14 +132,15 @@ const hasAnyAdminScope = (req) => {
   return false;
 };
 
-// XSUAA 인증 미들웨어 생성
+// CAP 인증 미들웨어 (AppRouter를 통해 들어오는 요청 처리)
+// AppRouter가 인증을 처리하고 JWT 토큰을 Authorization 헤더에 추가하거나
+// CAP가 이미 req.user를 설정했을 수 있음
 const createAuthMiddleware = () => {
   let xsuaaCredentials = null;
   try {
     const services = xsenv.readServices();
     xsuaaCredentials = services.xsuaa || services['xsuaa-application'];
   } catch (e) {
-    // 개발 환경에서는 VCAP_SERVICES가 없을 수 있음
     if (process.env.VCAP_SERVICES) {
       try {
         const vcap = JSON.parse(process.env.VCAP_SERVICES);
@@ -150,30 +151,33 @@ const createAuthMiddleware = () => {
     }
   }
 
-  if (!xsuaaCredentials) {
-    // 개발 환경에서는 인증을 건너뛸 수 있음
-    return (req, res, next) => {
-      // CAP가 이미 인증을 처리했을 수 있으므로 next() 호출
-      next();
-    };
-  }
-
   return (req, res, next) => {
-    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+    // CAP가 이미 인증을 처리했는지 확인
+    if (req.user) {
+      return next();
+    }
+
+    // Authorization 헤더에서 토큰 추출
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace(/^Bearer\s+/i, '');
+
     if (!token) {
-      // CAP가 이미 인증을 처리했을 수 있으므로 req.user 확인
-      if (req.user) {
-        return next();
-      }
+      // AppRouter를 통해 들어오는 요청은 CAP가 이미 인증을 처리했을 수 있음
+      // 하지만 req.user가 없으면 인증 실패
+      console.warn('[Auth] 인증 토큰이 없습니다. req.user:', req.user ? '있음' : '없음');
       return res.status(401).json({ error: '인증이 필요합니다. 로그인 후 다시 시도해주세요.' });
     }
 
+    // XSUAA credentials가 없으면 개발 환경일 수 있음
+    if (!xsuaaCredentials) {
+      // 개발 환경에서는 인증을 건너뛸 수 있음
+      return next();
+    }
+
+    // XSUAA를 사용하여 토큰 검증
     xssec.createSecurityContext(token, xsuaaCredentials, (err, securityContext) => {
       if (err) {
-        // CAP가 이미 인증을 처리했을 수 있으므로 req.user 확인
-        if (req.user) {
-          return next();
-        }
+        console.error('[Auth] 토큰 검증 실패:', err.message);
         return res.status(401).json({ error: '인증 토큰이 유효하지 않습니다.' });
       }
       req.user = securityContext;
@@ -226,6 +230,13 @@ cds.on('bootstrap', (app) => {
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
   });
+});
+
+/* =========================================================
+ * Served - CAP의 인증 미들웨어 이후에 라우트 등록
+ * ========================================================= */
+cds.on('served', () => {
+  const app = cds.app;
 
   /* =======================================================
    * ConfirmEnvSetup (existing)
@@ -365,6 +376,13 @@ cds.on('bootstrap', (app) => {
       `);
     }
   });
+});
+
+/* =========================================================
+ * Served - CAP의 인증 미들웨어 이후에 라우트 등록
+ * ========================================================= */
+cds.on('served', () => {
+  const app = cds.app;
 
   // XSUAA 인증 미들웨어 생성
   const authMiddleware = createAuthMiddleware();
@@ -453,20 +471,7 @@ cds.on('bootstrap', (app) => {
     }
   });
 
-  /* =======================================================
-   * Logout (existing)
-   * ======================================================= */
-  app.get('/logout', (req, res) => {
-    try {
-      res.clearCookie('connect.sid', { path: '/' });
-    } catch {}
-
-    if (req.session) {
-      req.session.destroy(() => res.redirect('/auth/Me()'));
-    } else {
-      res.redirect('/auth/Me()');
-    }
-  });
 });
 
 module.exports = cds.server;
+
