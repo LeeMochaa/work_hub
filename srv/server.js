@@ -4,6 +4,8 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const xsenv = require('@sap/xsenv');
+const xssec = require('@sap/xssec');
 
 /* =========================================================
  * Email template helpers
@@ -128,6 +130,57 @@ const hasAnyAdminScope = (req) => {
     if (scopes.has(c)) return true;
   }
   return false;
+};
+
+// XSUAA 인증 미들웨어 생성
+const createAuthMiddleware = () => {
+  let xsuaaCredentials = null;
+  try {
+    const services = xsenv.readServices();
+    xsuaaCredentials = services.xsuaa || services['xsuaa-application'];
+  } catch (e) {
+    // 개발 환경에서는 VCAP_SERVICES가 없을 수 있음
+    if (process.env.VCAP_SERVICES) {
+      try {
+        const vcap = JSON.parse(process.env.VCAP_SERVICES);
+        xsuaaCredentials = (vcap.xsuaa || vcap['xsuaa-application'] || [])[0]?.credentials;
+      } catch (e2) {
+        console.warn('[Auth] VCAP_SERVICES parse failed:', e2.message);
+      }
+    }
+  }
+
+  if (!xsuaaCredentials) {
+    // 개발 환경에서는 인증을 건너뛸 수 있음
+    return (req, res, next) => {
+      // CAP가 이미 인증을 처리했을 수 있으므로 next() 호출
+      next();
+    };
+  }
+
+  return (req, res, next) => {
+    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+    if (!token) {
+      // CAP가 이미 인증을 처리했을 수 있으므로 req.user 확인
+      if (req.user) {
+        return next();
+      }
+      return res.status(401).json({ error: '인증이 필요합니다. 로그인 후 다시 시도해주세요.' });
+    }
+
+    xssec.createSecurityContext(token, xsuaaCredentials, (err, securityContext) => {
+      if (err) {
+        // CAP가 이미 인증을 처리했을 수 있으므로 req.user 확인
+        if (req.user) {
+          return next();
+        }
+        return res.status(401).json({ error: '인증 토큰이 유효하지 않습니다.' });
+      }
+      req.user = securityContext;
+      req.authInfo = securityContext;
+      next();
+    });
+  };
 };
 
 const checkAdminPermission = (req, res, next) => {
@@ -313,10 +366,13 @@ cds.on('bootstrap', (app) => {
     }
   });
 
+  // XSUAA 인증 미들웨어 생성
+  const authMiddleware = createAuthMiddleware();
+
   /* =======================================================
    * Logo upload (ADMIN/SYSADMIN only) - BLOB 저장
    * ======================================================= */
-  app.post('/api/logo', checkAdminPermission, upload.single('logo'), async (req, res) => {
+  app.post('/api/logo', authMiddleware, checkAdminPermission, upload.single('logo'), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: '파일이 업로드되지 않았습니다.' });
 
@@ -361,7 +417,7 @@ cds.on('bootstrap', (app) => {
   /* =======================================================
    * Logo get (tenant specific)
    * ======================================================= */
-  app.get('/api/logo', async (req, res) => {
+  app.get('/api/logo', authMiddleware, async (req, res) => {
     try {
       const tenantId = getTenantId(req);
       if (!tenantId) return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
