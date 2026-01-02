@@ -236,6 +236,35 @@ module.exports = cds.service.impl(async function () {
             console.log('📥 [Auth.Bootstrap] Incoming user data --------------------');
             console.log('req.user:', JSON.stringify(u, null, 2));
             console.log('tenant:', tenant);
+            
+            // 역할 정보 상세 로깅
+            console.log('🔍 [Auth] Role Information Details:');
+            console.log('  - req.user.roles:', JSON.stringify(u.roles || {}, null, 2));
+            console.log('  - req.user.is function exists:', typeof (u.is) === 'function');
+            
+            // req.user.is() 메서드로 각 역할 체크
+            if (u.is && typeof u.is === 'function') {
+                console.log('  - req.user.is() checks:');
+                console.log('    * SYSADMIN:', u.is('SYSADMIN'));
+                console.log('    * Administrator:', u.is('Administrator'));
+                console.log('    * Leader:', u.is('Leader'));
+                console.log('    * User:', u.is('User'));
+                console.log('    * authenticated-user:', u.is('authenticated-user'));
+            }
+            
+            // JWT 토큰에서 역할 정보 추출 시도
+            if (u.authInfo && u.authInfo.jwt) {
+                try {
+                    const jwtPayload = JSON.parse(Buffer.from(u.authInfo.jwt.split('.')[1], 'base64').toString());
+                    console.log('  - JWT payload (roles/scopes):');
+                    console.log('    * scope:', jwtPayload.scope || 'N/A');
+                    console.log('    * xs.system.attributes:', JSON.stringify(jwtPayload['xs.system.attributes'] || {}, null, 2));
+                    console.log('    * xs.user.attributes:', JSON.stringify(jwtPayload['xs.user.attributes'] || {}, null, 2));
+                } catch (e) {
+                    console.warn('  - JWT payload parsing failed:', e.message);
+                }
+            }
+            
             console.log('-----------------------------------------------------------');
         } catch (e) {
             console.warn('⚠️ JSON.stringify(req.user) failed:', e.message);
@@ -255,17 +284,29 @@ module.exports = cds.service.impl(async function () {
         const roles = [];
         const userRoles = req.user?.roles || {};
         
+        // req.user.is() 메서드 사용 (XSUAA 역할 컬렉션 체크)
+        const hasRole = (roleName) => {
+            if (req.user?.is && typeof req.user.is === 'function') {
+                return req.user.is(roleName);
+            }
+            return false;
+        };
+
+        // scope 이름으로 체크 (req.user.roles 객체)
         const hasScope = (scopeName) => {
             const xsappnameScope = `$XSAPPNAME.${scopeName}`;
             const appScope = `work_hub.${scopeName}`;
             return !!(userRoles[xsappnameScope] || userRoles[appScope] || userRoles[scopeName]);
         };
 
-        // scope 이름으로 체크
+        // 역할 체크 (req.user.is() 우선, 없으면 scope 체크)
         ['SYSADMIN', 'Administrator', 'Leader', 'User'].forEach(r => {
-            if (hasScope(r)) roles.push(r);
+            if (hasRole(r) || hasScope(r)) {
+                roles.push(r);
+            }
         });
-        if (userRoles['authenticated-user'] || (req.user?.is && req.user.is('authenticated-user'))) {
+        
+        if (hasRole('authenticated-user') || userRoles['authenticated-user']) {
             roles.push('authenticated-user');
         }
 
@@ -276,8 +317,15 @@ module.exports = cds.service.impl(async function () {
         // req.user.roles 객체에서 직접 체크
         const roles = req.user?.roles || {};
         
-        // $XSAPPNAME이 실제로는 work_hub로 치환되지만, mocked-auth에서는 $XSAPPNAME 그대로 사용될 수 있음
-        // 두 가지 형태 모두 체크
+        // req.user.is() 메서드 사용 (XSUAA 역할 컬렉션 체크) - 우선순위 높음
+        const hasRole = (roleName) => {
+            if (req.user?.is && typeof req.user.is === 'function') {
+                return req.user.is(roleName);
+            }
+            return false;
+        };
+        
+        // scope 체크 (req.user.roles 객체)
         const hasScope = (scopeName) => {
             // 1. $XSAPPNAME.Administrator 형태
             const xsappnameScope = `$XSAPPNAME.${scopeName}`;
@@ -288,14 +336,28 @@ module.exports = cds.service.impl(async function () {
         };
         
         const flags = {
-            SYSADMIN: hasScope('SYSADMIN'),
-            ADMIN: hasScope('Administrator'),
-            LEADER: hasScope('Leader'),
-            USER: hasScope('User'),
-            AUTHENTICATED: !!(roles['authenticated-user'] || (req.user?.is && req.user.is('authenticated-user'))),
+            SYSADMIN: hasRole('SYSADMIN') || hasScope('SYSADMIN'),
+            ADMIN: hasRole('Administrator') || hasScope('Administrator'),
+            LEADER: hasRole('Leader') || hasScope('Leader'),
+            USER: hasRole('User') || hasScope('User'),
+            AUTHENTICATED: hasRole('authenticated-user') || !!(roles['authenticated-user']),
         };
-        console.log('[Auth] Role flags:', JSON.stringify(flags, null, 2));
-        console.log('[Auth] User roles:', JSON.stringify(roles, null, 2));
+        console.log('🔍 [Auth] Role Detection Results:');
+        console.log('  - Role flags:', JSON.stringify(flags, null, 2));
+        console.log('  - User roles object:', JSON.stringify(roles, null, 2));
+        console.log('  - req.user.is() check results:', {
+            SYSADMIN: hasRole('SYSADMIN'),
+            Administrator: hasRole('Administrator'),
+            Leader: hasRole('Leader'),
+            User: hasRole('User'),
+            'authenticated-user': hasRole('authenticated-user')
+        });
+        console.log('  - Scope check results:', {
+            SYSADMIN: hasScope('SYSADMIN'),
+            Administrator: hasScope('Administrator'),
+            Leader: hasScope('Leader'),
+            User: hasScope('User')
+        });
         return flags;
     };
 
