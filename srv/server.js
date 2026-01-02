@@ -237,8 +237,8 @@ cds.on('bootstrap', (app) => {
     }
   });
 
-  // 로고 업로드 엔드포인트 (ADMIN만 가능)
-  app.post('/api/logo', upload.single('logo'), async (req, res) => {
+  // 권한 체크 미들웨어 (multer 전에 실행)
+  const checkAdminPermission = async (req, res, next) => {
     try {
       // CORS 헤더 설정
       const origin = req.headers.origin;
@@ -307,6 +307,8 @@ cds.on('bootstrap', (app) => {
       });
       
       if (!isAdmin) {
+        // JSON 응답 보장
+        res.setHeader('Content-Type', 'application/json');
         return res.status(403).json({ 
           error: '권한이 없습니다. ADMIN 권한이 필요합니다.',
           debug: {
@@ -319,14 +321,34 @@ cds.on('bootstrap', (app) => {
           }
         });
       }
+      
+      next();
+    } catch (error) {
+      console.error('❌ [Upload] 권한 체크 실패:', error);
+      res.setHeader('Content-Type', 'application/json');
+      res.status(500).json({ error: '권한 체크 중 오류가 발생했습니다.' });
+    }
+  };
+
+  // 로고 업로드 엔드포인트 (ADMIN만 가능)
+  app.post('/api/logo', checkAdminPermission, upload.single('logo'), async (req, res) => {
+    try {
+      // CORS 헤더 설정
+      const origin = req.headers.origin;
+      if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+      }
 
       if (!req.file) {
+        res.setHeader('Content-Type', 'application/json');
         return res.status(400).json({ error: '파일이 업로드되지 않았습니다.' });
       }
 
       // 테넌트 ID 추출
       const tenantId = getTenantId(req);
       if (!tenantId) {
+        res.setHeader('Content-Type', 'application/json');
         return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
       }
 
@@ -354,6 +376,7 @@ cds.on('bootstrap', (app) => {
         size: req.file.size
       });
       
+      res.setHeader('Content-Type', 'application/json');
       res.json({
         success: true,
         message: '로고가 성공적으로 업로드되었습니다.',
@@ -369,6 +392,7 @@ cds.on('bootstrap', (app) => {
         res.setHeader('Access-Control-Allow-Credentials', 'true');
       }
       
+      res.setHeader('Content-Type', 'application/json');
       res.status(500).json({ error: error.message || '파일 업로드 중 오류가 발생했습니다.' });
     }
   });
