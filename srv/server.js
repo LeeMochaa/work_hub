@@ -5,7 +5,9 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// 이메일 템플릿 로더
+/* =========================================================
+ * Email template helpers
+ * ========================================================= */
 const loadEmailTemplate = (templateName) => {
   const templatePath = path.resolve(__dirname, 'email', `${templateName}.html`);
   try {
@@ -16,89 +18,168 @@ const loadEmailTemplate = (templateName) => {
   }
 };
 
-// 템플릿 변수 치환
 const renderTemplate = (template, variables) => {
   let rendered = template;
   for (const [key, value] of Object.entries(variables)) {
     const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
-    rendered = rendered.replace(regex, value || '');
+    rendered = rendered.replace(regex, value ?? '');
   }
   return rendered;
 };
 
-// PORT는 배포 환경에서 자동으로 설정되므로 여기서 고정하지 않음
-
-// Multer 설정 (메모리 스토리지 - BLOB 저장용)
+/* =========================================================
+ * Multer (memory storage for BLOB)
+ * ========================================================= */
 const upload = multer({
-  storage: multer.memoryStorage(),  // 메모리에 저장 후 DB에 BLOB으로 저장
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB 제한
-  },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
-    // 이미지 파일만 허용
-    const allowedTypes = /jpeg|jpg|png|gif|svg|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    
-    if (extname && mimetype) {
-      cb(null, true);
-    } else {
-      cb(new Error('이미지 파일만 업로드 가능합니다. (jpeg, jpg, png, gif, svg, webp)'));
-    }
+    const allowedExt = /\.(jpeg|jpg|png|gif|svg|webp)$/i;
+    const allowedMime = /^(image\/jpeg|image\/jpg|image\/png|image\/gif|image\/svg\+xml|image\/webp)$/i;
+
+    const extOk = allowedExt.test(path.extname(file.originalname || '').toLowerCase());
+    const mimeOk = allowedMime.test(file.mimetype || '');
+
+    if (extOk && mimeOk) return cb(null, true);
+    return cb(new Error('이미지 파일만 업로드 가능합니다. (jpeg, jpg, png, gif, svg, webp)'));
   }
 });
 
-// 테넌트 ID 추출 헬퍼 함수
+/* =========================================================
+ * Tenant ID helper
+ * ========================================================= */
 const getTenantId = (req) => {
-  // CAP 멀티테넌트에서 테넌트 ID 추출
-  // 1. req.tenant (CAP가 자동으로 설정)
-  if (req.tenant) {
-    return req.tenant;
-  }
-  // 2. cds.context.tenant (현재 컨텍스트)
-  if (cds.context?.tenant) {
-    return cds.context.tenant;
-  }
-  // 3. req.user에서 추출
-  if (req.user?.tenant) {
-    return req.user.tenant;
-  }
-  if (req.user?.attr?.zid) {
-    return req.user.attr.zid;
-  }
-  // 4. JWT 토큰에서 추출 시도
-  if (req.authInfo?.getIdentityZone) {
+  // 1) CAP multi-tenant context (preferred)
+  if (req.tenant) return req.tenant;
+  if (cds.context?.tenant) return cds.context.tenant;
+
+  // 2) xssec user info
+  if (req.user?.tenant) return req.user.tenant;
+  if (req.user?.attr?.zid) return req.user.attr.zid;
+
+  // 3) authInfo identity zone (fallback)
+  if (req.authInfo?.getIdentityZone && typeof req.authInfo.getIdentityZone === 'function') {
     return req.authInfo.getIdentityZone();
   }
   return null;
 };
 
+/* =========================================================
+ * Auth / Role helpers (xs-security.json 기반)
+ * - 필요한 권한: $XSAPPNAME.Administrator 또는 $XSAPPNAME.SYSADMIN
+ * - 실제 토큰에는 <xsappname>.Administrator 형태로 들어옴
+ * ========================================================= */
+const getXsappnameFromEnv = () => {
+  try {
+    if (process.env.VCAP_SERVICES) {
+      const vcap = JSON.parse(process.env.VCAP_SERVICES);
+      const xsuaa = (vcap.xsuaa || [])[0];
+      return xsuaa?.credentials?.xsappname || null;
+    }
+  } catch (e) {
+    console.warn('[Auth] VCAP_SERVICES parse failed:', e.message);
+  }
+  return null;
+};
+
+const extractUserScopes = (req) => {
+  const scopes = new Set();
+
+  // xssec user.scopes
+  if (Array.isArray(req.user?.scopes)) {
+    req.user.scopes.forEach((s) => scopes.add(String(s)));
+  }
+
+  // roles array
+  if (Array.isArray(req.user?.roles)) {
+    req.user.roles.forEach((s) => scopes.add(String(s)));
+  }
+
+  // roles object map
+  if (req.user?.roles && typeof req.user.roles === 'object' && !Array.isArray(req.user.roles)) {
+    Object.keys(req.user.roles).forEach((k) => scopes.add(String(k)));
+  }
+
+  return scopes;
+};
+
+const hasAnyAdminScope = (req) => {
+  // 1) xssec의 req.user.is()가 있으면 최우선
+  if (req.user?.is && typeof req.user.is === 'function') {
+    // 환경에 따라 suffix만으로도 체크되는 케이스가 있어 우선 시도
+    if (req.user.is('SYSADMIN') || req.user.is('Administrator')) return true;
+  }
+
+  const xsappname = getXsappnameFromEnv(); // 예: work_hub-IKD-Saas
+  const scopes = extractUserScopes(req);
+
+  const candidates = new Set([
+    ...(xsappname ? [`${xsappname}.SYSADMIN`, `${xsappname}.Administrator`] : []),
+    // fallback들
+    'work_hub.SYSADMIN',
+    'work_hub.Administrator',
+    '$XSAPPNAME.SYSADMIN',
+    '$XSAPPNAME.Administrator',
+    'SYSADMIN',
+    'Administrator'
+  ]);
+
+  for (const c of candidates) {
+    if (scopes.has(c)) return true;
+  }
+  return false;
+};
+
+const checkAdminPermission = (req, res, next) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: '인증이 필요합니다. 로그인 후 다시 시도해주세요.' });
+    }
+    if (!hasAnyAdminScope(req)) {
+      return res.status(403).json({
+        error: '권한이 없습니다. Administrator 또는 SYSADMIN 권한이 필요합니다.'
+      });
+    }
+    return next();
+  } catch (e) {
+    console.error('[Auth] checkAdminPermission error:', e);
+    return res.status(500).json({ error: '권한 체크 중 오류가 발생했습니다.' });
+  }
+};
+
+/* =========================================================
+ * CORS helper (dev only)
+ * ========================================================= */
+const applyDevCors = (req, res) => {
+  const origin = req.headers.origin;
+  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+};
+
+/* =========================================================
+ * Bootstrap
+ * ========================================================= */
 cds.on('bootstrap', (app) => {
   app.use(bodyParser.json({ limit: '20mb' }));
   app.use(bodyParser.urlencoded({ limit: '20mb', extended: true }));
 
-  // CORS 헤더 설정 (개발 환경)
+  // Dev CORS
   app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    // 개발 환경에서 localhost 허용
-    if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-    }
-    
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(200);
-    }
+    applyDevCors(req, res);
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
   });
 
-  // 환경변수 설정 확인 페이지 (자동 실행 방지)
+  /* =======================================================
+   * ConfirmEnvSetup (existing)
+   * ======================================================= */
   app.get('/odata/v4/auth/ConfirmEnvSetup', async (req, res) => {
     try {
       const tenant = req.query.tenant;
-      
       if (!tenant) {
         return res.status(400).send(`
           <html>
@@ -111,17 +192,13 @@ cds.on('bootstrap', (app) => {
         `);
       }
 
-      const cds = require('@sap/cds');
       const { SELECT } = cds.ql;
       const TenantConfig = cds.entities['TenantConfig'];
-      // 테넌트 설정 확인
+
       const tenantConfig = await cds.run(
-        SELECT.one.from(TenantConfig)
-        .where({ id: tenant })
+        SELECT.one.from(TenantConfig).where({ id: tenant })
       );
-      
-      console.log(`[ConfirmEnvSetup] 테넌트 ${tenant}의 환경변수 설정 확인 시도`);
-      console.log(TenantConfig);
+
       if (!tenantConfig) {
         return res.status(404).send(`
           <html>
@@ -134,21 +211,26 @@ cds.on('bootstrap', (app) => {
         `);
       }
 
-      const baseUrl = process.env.APP_URL || 
-        (process.env.VCAP_APPLICATION 
-          ? JSON.parse(process.env.VCAP_APPLICATION).application_uris?.[0] 
-            ? `https://${JSON.parse(process.env.VCAP_APPLICATION).application_uris[0]}`
-            : 'http://localhost:4004'
+      const baseUrl =
+        process.env.APP_URL ||
+        (process.env.VCAP_APPLICATION
+          ? (() => {
+              const v = JSON.parse(process.env.VCAP_APPLICATION);
+              const uri = v.application_uris?.[0];
+              return uri ? `https://${uri}` : 'http://localhost:4004';
+            })()
           : 'http://localhost:4004');
+
       const completeUrl = `${baseUrl}/odata/v4/auth/SetEnvConfigured?tenant=${encodeURIComponent(tenant)}`;
 
-      // 템플릿 로드 및 변수 치환
       const confirmTemplate = loadEmailTemplate('confirm-env-setup');
       const confirmHtml = renderTemplate(confirmTemplate, {
-        tenant: tenant,
+        tenant,
         companyName: tenantConfig.companyName || '(없음)',
-        mailSentAt: tenantConfig.mailSentAt ? new Date(tenantConfig.mailSentAt).toLocaleString('ko-KR') : '(없음)',
-        completeUrl: completeUrl
+        mailSentAt: tenantConfig.mailSentAt
+          ? new Date(tenantConfig.mailSentAt).toLocaleString('ko-KR')
+          : '(없음)',
+        completeUrl
       });
 
       res.send(confirmHtml);
@@ -166,11 +248,12 @@ cds.on('bootstrap', (app) => {
     }
   });
 
-  // 환경변수 설정 완료 처리 (확인 페이지에서 버튼 클릭 시)
+  /* =======================================================
+   * SetEnvConfigured (existing)
+   * ======================================================= */
   app.get('/odata/v4/auth/SetEnvConfigured', async (req, res) => {
     try {
       const tenant = req.query.tenant;
-      
       if (!tenant) {
         return res.status(400).send(`
           <html>
@@ -183,14 +266,11 @@ cds.on('bootstrap', (app) => {
         `);
       }
 
-      const cds = require('@sap/cds');
       const { SELECT, UPDATE } = cds.ql;
       const TenantConfig = cds.entities['TenantConfig'];
-      
-      // 테넌트 설정 확인
+
       const tenantConfig = await cds.run(
-        SELECT.one.from(TenantConfig)
-          .where({ id: tenant })
+        SELECT.one.from(TenantConfig).where({ id: tenant })
       );
 
       if (!tenantConfig) {
@@ -205,19 +285,15 @@ cds.on('bootstrap', (app) => {
         `);
       }
 
-      // envConfigured를 true로 업데이트
       await cds.run(
-        UPDATE(TenantConfig)
-          .set({ envConfigured: true })
-          .where({ id: tenant })
+        UPDATE(TenantConfig).set({ envConfigured: true }).where({ id: tenant })
       );
 
       console.log(`✅ [SetEnvConfigured] 테넌트 ${tenant}의 환경변수 설정 완료 처리`);
 
-      // 템플릿 로드 및 변수 치환
       const completeTemplate = loadEmailTemplate('env-setup-complete');
       const completeHtml = renderTemplate(completeTemplate, {
-        tenant: tenant,
+        tenant,
         companyName: tenantConfig.companyName || '(없음)',
         completedAt: new Date().toLocaleString('ko-KR')
       });
@@ -237,228 +313,100 @@ cds.on('bootstrap', (app) => {
     }
   });
 
-  // 권한 체크 미들웨어 (multer 전에 실행)
-  const checkAdminPermission = async (req, res, next) => {
-    try {
-      // CORS 헤더 설정
-      const origin = req.headers.origin;
-      if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
-      }
-
-      // 권한 체크 (ADMIN만 업로드 가능)
-      const userRoles = req.user?.roles || {};
-      
-      // 실제 xsappname 가져오기
-      let actualXsappname = null;
-      try {
-        if (req.user?.authInfo?.services?.[0]?.credentials?.xsappname) {
-          actualXsappname = req.user.authInfo.services[0].credentials.xsappname;
-        } else if (process.env.VCAP_SERVICES) {
-          const vcapServices = JSON.parse(process.env.VCAP_SERVICES);
-          const xsuaaService = vcapServices['xsuaa'] || vcapServices['xsuaa-application'] || [];
-          if (xsuaaService.length > 0 && xsuaaService[0].credentials?.xsappname) {
-            actualXsappname = xsuaaService[0].credentials.xsappname;
-          }
-        }
-      } catch (e) {
-        console.warn('[Upload] xsappname 추출 실패:', e.message);
-      }
-      
-      // req.user.is() 메서드 사용 (XSUAA 역할 컬렉션 체크) - 우선순위 1
-      const hasRole = (roleName) => {
-        if (req.user?.is && typeof req.user.is === 'function') {
-          return req.user.is(roleName);
-        }
-        return false;
-      };
-      
-      // scope 체크 (req.user.roles 객체) - 우선순위 2
-      const hasScope = (scopeName) => {
-        // 1. 실제 xsappname.Administrator 형태
-        if (actualXsappname) {
-          const actualScope = `${actualXsappname}.${scopeName}`;
-          if (userRoles[actualScope]) return true;
-        }
-        // 2. $XSAPPNAME.Administrator 형태
-        const xsappnameScope = `$XSAPPNAME.${scopeName}`;
-        if (userRoles[xsappnameScope]) return true;
-        // 3. work_hub.Administrator 형태 (fallback)
-        const appScope = `work_hub.${scopeName}`;
-        if (userRoles[appScope]) return true;
-        // 4. Administrator만 (직접 키로 체크)
-        if (userRoles[scopeName]) return true;
-        return false;
-      };
-      
-      const isAdmin = hasRole('Administrator') || hasRole('SYSADMIN') || 
-                      hasScope('Administrator') || hasScope('SYSADMIN');
-      
-      console.log('🔍 [Upload] 권한 체크:', {
-        'req.user.is function exists': typeof (req.user?.is) === 'function',
-        'actualXsappname': actualXsappname || 'N/A',
-        'hasRole(Administrator)': hasRole('Administrator'),
-        'hasRole(SYSADMIN)': hasRole('SYSADMIN'),
-        'hasScope(Administrator)': hasScope('Administrator'),
-        'hasScope(SYSADMIN)': hasScope('SYSADMIN'),
-        'isAdmin': isAdmin,
-        'req.user.roles': JSON.stringify(userRoles)
-      });
-      
-      if (!isAdmin) {
-        // JSON 응답 보장
-        res.setHeader('Content-Type', 'application/json');
-        return res.status(403).json({ 
-          error: '권한이 없습니다. ADMIN 권한이 필요합니다.',
-          debug: {
-            hasRoleAdministrator: hasRole('Administrator'),
-            hasRoleSYSADMIN: hasRole('SYSADMIN'),
-            hasScopeAdministrator: hasScope('Administrator'),
-            hasScopeSYSADMIN: hasScope('SYSADMIN'),
-            actualXsappname: actualXsappname,
-            userRoles: userRoles
-          }
-        });
-      }
-      
-      next();
-    } catch (error) {
-      console.error('❌ [Upload] 권한 체크 실패:', error);
-      res.setHeader('Content-Type', 'application/json');
-      res.status(500).json({ error: '권한 체크 중 오류가 발생했습니다.' });
-    }
-  };
-
-  // 로고 업로드 엔드포인트 (ADMIN만 가능)
+  /* =======================================================
+   * Logo upload (ADMIN/SYSADMIN only) - BLOB 저장
+   * ======================================================= */
   app.post('/api/logo', checkAdminPermission, upload.single('logo'), async (req, res) => {
     try {
-      // CORS 헤더 설정
-      const origin = req.headers.origin;
-      if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
-      }
+      if (!req.file) return res.status(400).json({ error: '파일이 업로드되지 않았습니다.' });
 
-      if (!req.file) {
-        res.setHeader('Content-Type', 'application/json');
-        return res.status(400).json({ error: '파일이 업로드되지 않았습니다.' });
-      }
-
-      // 테넌트 ID 추출
       const tenantId = getTenantId(req);
-      if (!tenantId) {
-        res.setHeader('Content-Type', 'application/json');
-        return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
-      }
+      if (!tenantId) return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
 
-      const { SELECT, UPSERT } = cds.ql;
+      const { UPSERT } = cds.ql;
       const TenantLogo = cds.entities['TenantLogo'];
+      if (!TenantLogo) return res.status(500).json({ error: 'TenantLogo 엔티티를 찾을 수 없습니다.' });
 
-      // 테넌트 컨텍스트로 트랜잭션 생성 (테넌트별 DB 접근)
+      // ✅ 멀티테넌트 컨텍스트 반영
       const tx = cds.transaction(req);
 
-      // 기존 로고가 있으면 업데이트, 없으면 생성
       await tx.run(
         UPSERT.into(TenantLogo).entries({
           id: tenantId,
-          content: req.file.buffer,  // BLOB 데이터
+          content: req.file.buffer,
           contentType: req.file.mimetype,
           filename: req.file.originalname,
           size: req.file.size
         })
       );
 
-      console.log('✅ [Upload] 로고 업로드 완료 (DB 저장):', {
-        tenantId: tenantId,
+      console.log('✅ [Logo] 업로드 완료(DB 저장):', {
+        tenantId,
         filename: req.file.originalname,
         contentType: req.file.mimetype,
         size: req.file.size
       });
-      
-      res.setHeader('Content-Type', 'application/json');
-      res.json({
+
+      return res.json({
         success: true,
         message: '로고가 성공적으로 업로드되었습니다.',
-        url: '/api/logo'  // 조회 URL
+        url: '/api/logo'
       });
     } catch (error) {
-      console.error('❌ [Upload] 로고 업로드 실패:', error);
-      
-      // CORS 헤더 설정 (에러 응답에도)
-      const origin = req.headers.origin;
-      if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
-      }
-      
-      res.setHeader('Content-Type', 'application/json');
-      res.status(500).json({ error: error.message || '파일 업로드 중 오류가 발생했습니다.' });
+      console.error('❌ [Logo] 업로드 실패:', error);
+      return res.status(500).json({ error: error.message || '파일 업로드 중 오류가 발생했습니다.' });
     }
   });
 
-  // 로고 조회 엔드포인트 (테넌트별 동적 조회)
+  /* =======================================================
+   * Logo get (tenant specific)
+   * ======================================================= */
   app.get('/api/logo', async (req, res) => {
     try {
-      // 테넌트 ID 추출
       const tenantId = getTenantId(req);
-      if (!tenantId) {
-        return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
-      }
+      if (!tenantId) return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
 
       const { SELECT } = cds.ql;
       const TenantLogo = cds.entities['TenantLogo'];
+      if (!TenantLogo) return res.status(500).json({ error: 'TenantLogo 엔티티를 찾을 수 없습니다.' });
 
-      // 테넌트 컨텍스트로 트랜잭션 생성 (테넌트별 DB 접근)
       const tx = cds.transaction(req);
 
-      // 테넌트별 로고 조회
       const logo = await tx.run(
-        SELECT.one.from(TenantLogo)
-          .where({ id: tenantId })
+        SELECT.one.from(TenantLogo).columns('content', 'contentType', 'modifiedAt').where({ id: tenantId })
       );
 
-      if (!logo || !logo.content) {
-        // 기본 로고 반환 (없으면 404 또는 기본 이미지)
-        // 여기서는 기본 로고가 없다고 가정하고 404 반환
-        // 필요시 기본 로고 파일을 읽어서 반환할 수 있음
-        return res.status(404).json({ 
-          error: '로고를 찾을 수 없습니다.',
-          useDefault: true
-        });
+      if (!logo?.content) {
+        return res.status(404).json({ error: '로고를 찾을 수 없습니다.', useDefault: true });
       }
 
-      // BLOB 데이터를 이미지로 반환
+      // 캐싱
       res.setHeader('Content-Type', logo.contentType || 'image/png');
-      res.setHeader('Cache-Control', 'public, max-age=3600');  // 1시간 캐시
-      
-      // updatedAt이 있으면 ETag로 사용
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+
       if (logo.modifiedAt) {
-        const etag = `"${logo.modifiedAt.getTime()}"`;
+        const etag = `"${new Date(logo.modifiedAt).getTime()}"`;
         res.setHeader('ETag', etag);
-        
-        // 클라이언트가 캐시된 버전을 가지고 있으면 304 반환
-        if (req.headers['if-none-match'] === etag) {
-          return res.status(304).end();
-        }
+        if (req.headers['if-none-match'] === etag) return res.status(304).end();
       }
 
-      res.send(Buffer.from(logo.content));
+      return res.send(Buffer.from(logo.content));
     } catch (error) {
-      console.error('❌ [Logo] 로고 조회 실패:', error);
-      res.status(500).json({ error: error.message || '로고 조회 중 오류가 발생했습니다.' });
+      console.error('❌ [Logo] 조회 실패:', error);
+      return res.status(500).json({ error: error.message || '로고 조회 중 오류가 발생했습니다.' });
     }
   });
 
+  /* =======================================================
+   * Logout (existing)
+   * ======================================================= */
   app.get('/logout', (req, res) => {
     try {
       res.clearCookie('connect.sid', { path: '/' });
     } catch {}
 
     if (req.session) {
-      req.session.destroy(() => {
-        res.redirect('/auth/Me()');
-      });
+      req.session.destroy(() => res.redirect('/auth/Me()'));
     } else {
       res.redirect('/auth/Me()');
     }
@@ -466,4 +414,3 @@ cds.on('bootstrap', (app) => {
 });
 
 module.exports = cds.server;
-
