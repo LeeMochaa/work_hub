@@ -5,6 +5,7 @@ import { useModel } from './model/ModelProvider';
 import Welcomer from './components/Welcomer';
 import AccessDenied from './components/AccessDenied';
 import TenantSetupWizard from './components/TenantSetupWizard';
+import LogoDisplay from './components/LogoDisplay';
 
 import './App.css';
 
@@ -237,11 +238,29 @@ export default function App() {
               alignItems: 'center',
               height: '100vh',
               flexDirection: 'column',
-              gap: '1rem'
+              gap: '2rem',
+              padding: '2rem'
             }}>
-              <h1>WorkHub Home</h1>
-              <p>환영합니다, {me?.name || me?.id}님!</p>
-              <button onClick={handleLogout}>로그아웃</button>
+              {/* 로고 표시 영역 */}
+              <LogoDisplay style={{ marginBottom: '1rem' }} />
+              
+              <h1 style={{ margin: 0 }}>WorkHub Home</h1>
+              <p style={{ margin: 0, color: '#6a6d70' }}>
+                환영합니다, {me?.name || me?.id}님!
+              </p>
+              <button 
+                onClick={handleLogout}
+                style={{
+                  padding: '0.5rem 1rem',
+                  border: '1px solid #d3d7db',
+                  borderRadius: '4px',
+                  background: 'white',
+                  cursor: 'pointer',
+                  fontSize: '0.9rem'
+                }}
+              >
+                로그아웃
+              </button>
             </div>
           } />
         </Routes>
