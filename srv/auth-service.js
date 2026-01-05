@@ -40,10 +40,9 @@ if (process.env.NODE_ENV !== 'production' && !process.env.VCAP_SERVICES) {
     if (result.error) {
       console.warn('[Auth] .env 파일 로드 실패:', result.error.message);
     } else {
-      console.log('[Auth] .env 파일 로드 완료:', envPath);
-
+      console.log(`[Auth] .env 파일 로드 완료: ${envPath}`);
       // 디버깅용 (민감정보는 출력하지 말 것)
-      if (process.env.SMTP_USER) console.log('[Auth] SMTP_USER:', process.env.SMTP_USER);
+      if (process.env.SMTP_USER) console.log('[Auth] SMTP_USER: (loaded)');
       if (process.env.SMTP_ENV) console.log('[Auth] SMTP_ENV: (loaded)');
     }
   } catch (e) {
@@ -57,7 +56,91 @@ module.exports = cds.service.impl(async function () {
     (Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions().timeZone) ||
     'UTC';
 
-  const userSrv = await cds.connect.to('UserService');
+  // =====================================================
+  // Common Helpers (Logging / Safe JSON / Mask Secrets)
+  // =====================================================
+
+  const safeJson = (obj) => {
+    try {
+      return JSON.stringify(obj, null, 2);
+    } catch (e) {
+      return '(unserializable)';
+    }
+  };
+
+  // 민감정보 마스킹 (pass, secret, token 등)
+  const maskSecrets = (obj) => {
+    const SENSITIVE_KEYS = [
+      'pass',
+      'password',
+      'clientsecret',
+      'clientSecret',
+      'secret',
+      'token',
+      'access_token',
+      'refresh_token',
+      'authorization',
+      'verificationkey',
+      'privateKey'
+    ];
+
+    const walk = (v) => {
+      if (v === null || v === undefined) return v;
+      if (typeof v === 'string') return v;
+      if (typeof v !== 'object') return v;
+      if (Array.isArray(v)) return v.map(walk);
+
+      const out = {};
+      for (const [k, val] of Object.entries(v)) {
+        const lk = String(k).toLowerCase();
+        if (SENSITIVE_KEYS.includes(lk)) {
+          out[k] = '***';
+        } else {
+          out[k] = walk(val);
+        }
+      }
+      return out;
+    };
+
+    return walk(obj);
+  };
+
+  // ✅ 블록 로그: 콘솔 1회 출력
+  // - data: 문자열 / 객체 / 배열 모두 가능
+  const logBlock = (title, data, opts = {}) => {
+    const { level = 'log' } = opts;
+    const now = new Date().toISOString();
+
+    let body = '';
+    if (typeof data === 'string') {
+      body = data;
+    } else {
+      // 객체면 JSON으로
+      body = safeJson(maskSecrets(data));
+    }
+
+    const block =
+`==================== [${title}] ====================
+time: ${now}
+${body}
+=====================================================
+`;
+
+    // console[level] 사용 (log/warn/error)
+    const fn = console[level] || console.log;
+    fn(block);
+  };
+
+  // base64url payload decode
+  const decodeJwtPayload = (jwt) => {
+    try {
+      const b64 = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+      return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+    } catch (e) {
+      return null;
+    }
+  };
 
   // =====================================================
   // BTP Cockpit URL Generator (VCAP only)
@@ -67,28 +150,21 @@ module.exports = cds.service.impl(async function () {
     let subaccountId = null;
 
     try {
-      // VCAP_APPLICATION에서 region 추출
       const vcapApp = process.env.VCAP_APPLICATION ? JSON.parse(process.env.VCAP_APPLICATION) : null;
       if (vcapApp?.application_uris?.length) {
         const appUri = vcapApp.application_uris[0];
         const regionMatch = appUri.match(/\.(ap|eu|us)(\d+)\./);
-        if (regionMatch) region = regionMatch[1] + regionMatch[2]; // ap10, eu10, us10...
+        if (regionMatch) region = regionMatch[1] + regionMatch[2];
       }
 
-      // VCAP_SERVICES에서 XSUAA 서비스 정보 추출
       const vcapServices = process.env.VCAP_SERVICES ? JSON.parse(process.env.VCAP_SERVICES) : null;
       if (vcapServices) {
         const xsuaaService = vcapServices['xsuaa'] || vcapServices['xsuaa-application'] || [];
         if (xsuaaService.length > 0 && xsuaaService[0].credentials) {
           const creds = xsuaaService[0].credentials;
 
-          if (creds.uaadomain) {
-            const uaaMatch = creds.uaadomain.match(/^([^.]+)\.authentication\./);
-            if (uaaMatch) subaccountId = uaaMatch[1];
-          }
-
           if (creds.url) {
-            const urlMatch = creds.url.match(/https:\/\/([^.]+)\.authentication\.([^.]+)\.hana\.ondemand\.com/);
+            const urlMatch = String(creds.url).match(/https:\/\/([^.]+)\.authentication\.([^.]+)\.hana\.ondemand\.com/);
             if (urlMatch) {
               subaccountId = urlMatch[1];
               if (!region) region = urlMatch[2];
@@ -103,11 +179,9 @@ module.exports = cds.service.impl(async function () {
         return `https://cockpit.${region}.hana.ondemand.com/cockpit/#/users`;
       }
     } catch (e) {
-      console.warn('[Auth] VCAP 파싱 실패:', e.message);
+      logBlock('Auth/VCAP_PARSE_FAIL', { message: e.message }, { level: 'warn' });
     }
 
-    // 개발 환경에서는 null
-    console.log('[Auth] BTP Cockpit URL 생성 실패: VCAP 정보 없음 (개발 환경일 가능성)');
     return null;
   };
 
@@ -136,10 +210,11 @@ module.exports = cds.service.impl(async function () {
           secure: c.SMTP_SECURE === true || c.SMTP_SECURE === 'true',
           auth: { user: c.SMTP_USER, pass: c.SMTP_PASS },
           from: c.SMTP_FROM || c.SMTP_USER,
+          _source: 'VCAP_SERVICES'
         };
       }
     } catch (e) {
-      console.warn('[SMTP] VCAP_SERVICES 파싱 실패:', e.message);
+      logBlock('SMTP/VCAP_PARSE_FAIL', { message: e.message }, { level: 'warn' });
     }
 
     // 2) 개발/대체: SMTP_ENV(JSON)
@@ -154,10 +229,11 @@ module.exports = cds.service.impl(async function () {
             secure: c.SMTP_SECURE === true || c.SMTP_SECURE === 'true',
             auth: { user: c.SMTP_USER, pass: c.SMTP_PASS },
             from: c.SMTP_FROM || c.SMTP_USER,
+            _source: 'SMTP_ENV'
           };
         }
       } catch (e) {
-        console.warn('[SMTP] SMTP_ENV JSON 파싱 실패:', e.message);
+        logBlock('SMTP/SMTP_ENV_PARSE_FAIL', { message: e.message }, { level: 'warn' });
       }
     }
 
@@ -170,6 +246,7 @@ module.exports = cds.service.impl(async function () {
         secure: process.env.SMTP_SECURE === 'true',
         auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
         from: process.env.SMTP_FROM || process.env.SMTP_USER,
+        _source: 'ENV'
       };
     }
 
@@ -201,7 +278,7 @@ module.exports = cds.service.impl(async function () {
     const gn = attr.givenName || attr.given_name;
     const fn = attr.familyName || attr.family_name;
 
-    let display = gn || fn ? [fn, gn].filter(Boolean).join('') : null;
+    let display = (gn || fn) ? [fn, gn].filter(Boolean).join('') : null;
     if (!display) display = attr.display_name || attr.name || id;
 
     const safeId = String(id || 'anonymous');
@@ -212,28 +289,10 @@ module.exports = cds.service.impl(async function () {
     return { id: safeId, name: safeName, tenant, email, raw: safeJson(attr) };
   };
 
-  const safeJson = (obj) => {
-    try {
-      return JSON.stringify(obj, null, 2);
-    } catch (e) {
-      return undefined;
-    }
-  };
-
-  const decodeJwtPayload = (jwt) => {
-    try {
-      const b64 = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-      const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-      return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
-    } catch (e) {
-      return null;
-    }
-  };
-
   const createRoleChecker = (req) => {
     const userRoles = req.user?.roles || {};
 
-    // 실제 xsappname 가져오기 (VCAP_SERVICES 또는 req.user.authInfo에서)
+    // 실제 xsappname 가져오기
     let actualXsappname = null;
     try {
       if (req.user?.authInfo?.services?.[0]?.credentials?.xsappname) {
@@ -246,7 +305,7 @@ module.exports = cds.service.impl(async function () {
         }
       }
     } catch (e) {
-      console.warn('[Auth] xsappname 추출 실패:', e.message);
+      logBlock('Auth/XSAPPNAME_RESOLVE_FAIL', { message: e.message }, { level: 'warn' });
     }
 
     const hasRole = (roleName) => {
@@ -265,7 +324,7 @@ module.exports = cds.service.impl(async function () {
       return false;
     };
 
-    return { hasRole, hasScope, actualXsappname };
+    return { hasRole, hasScope, actualXsappname, userRoles };
   };
 
   const getRoles = (req) => {
@@ -282,7 +341,7 @@ module.exports = cds.service.impl(async function () {
   };
 
   const getRoleFlags = (req) => {
-    const roles = req.user?.roles || {};
+    const rolesObject = req.user?.roles || {};
     const { hasRole, hasScope, actualXsappname } = createRoleChecker(req);
 
     const flags = {
@@ -290,13 +349,24 @@ module.exports = cds.service.impl(async function () {
       ADMIN: hasRole('Administrator') || hasScope('Administrator'),
       LEADER: hasRole('Leader') || hasScope('Leader'),
       USER: hasRole('User') || hasScope('User'),
-      AUTHENTICATED: hasRole('authenticated-user') || !!roles['authenticated-user'],
+      AUTHENTICATED: hasRole('authenticated-user') || !!rolesObject['authenticated-user'],
     };
 
-    console.log('🔍 [Auth] Role Detection Results:', {
+    // ✅ 블록 로그로 보기 좋게
+    logBlock('Auth/ROLE_DETECTION', {
       flags,
       actualXsappname: actualXsappname || 'N/A',
-      rolesObject: roles,
+      reqUserIsExists: typeof req.user?.is === 'function',
+      reqUserIsChecks: (typeof req.user?.is === 'function')
+        ? {
+            SYSADMIN: req.user.is('SYSADMIN'),
+            Administrator: req.user.is('Administrator'),
+            Leader: req.user.is('Leader'),
+            User: req.user.is('User'),
+            'authenticated-user': req.user.is('authenticated-user'),
+          }
+        : '(no req.user.is)',
+      rolesObject,
     });
 
     return flags;
@@ -308,18 +378,30 @@ module.exports = cds.service.impl(async function () {
 
   // 🔥 한 방에 다 주는 엔드포인트
   this.on('Bootstrap', async (req) => {
-    // ✅ JWT Zone/Scope 확정 로그 (가장 먼저!)
+    // ✅ JWT/ROLE 디버그 블록 (최상단)
     const jwt = req.user?.authInfo?.jwt;
-    if (jwt) {
-        const p = decodeJwtPayload(jwt);
-        console.log('[JWT] zid:', p?.zid);
-        console.log('[JWT] subaccountid:', p?.subaccountid);
-        console.log('[JWT] iss:', p?.iss);
-        console.log('[JWT] aud:', p?.aud);
-        console.log('[JWT] scope:', p?.scope);
-    } else {
-        console.log('[JWT] no jwt in req.user.authInfo');
-    }
+    const payload = jwt ? decodeJwtPayload(jwt) : null;
+
+    logBlock('Auth/BOOTSTRAP_IN', {
+      tenant: req.tenant || 'N/A',
+      userId: req.user?.id || 'N/A',
+      userName: req.user?.name || 'N/A',
+      hasJwt: !!jwt,
+      jwtInfo: payload
+        ? {
+            zid: payload.zid,
+            subaccountid: payload.subaccountid,
+            iss: payload.iss,
+            aud: payload.aud,
+            scope: payload.scope,
+          }
+        : '(no jwt payload)',
+      // 여기서 roles도 같이 보여주면 “openid만 찍히는지” 확실히 보임
+      reqUserRolesObject: req.user?.roles || {},
+      reqUserIsExists: typeof req.user?.is === 'function',
+    });
+
+    // 유저 upsert + status/role 관리
     const userSrv = await cds.connect.to('UserService');
     await userSrv.ensureUserFromReq(req);
 
@@ -342,7 +424,7 @@ module.exports = cds.service.impl(async function () {
         adminEmail = tenantConfig.adminEmail || null;
       }
     } catch (e) {
-      console.warn('[Auth.Bootstrap] 테넌트 설정 조회 실패:', e.message);
+      logBlock('Auth/BOOTSTRAP_TENANTCONFIG_READ_FAIL', { message: e.message }, { level: 'warn' });
     }
 
     if (!adminEmail) {
@@ -352,9 +434,18 @@ module.exports = cds.service.impl(async function () {
         const adminUser = await tx.run(SELECT.one.from(User).where({ role: 'Administrator' }).orderBy('createdAt'));
         if (adminUser?.email) adminEmail = adminUser.email;
       } catch (e) {
-        console.warn('[Auth.Bootstrap] Administrator 이메일 조회 실패:', e.message);
+        logBlock('Auth/BOOTSTRAP_ADMINEMAIL_FALLBACK_FAIL', { message: e.message }, { level: 'warn' });
       }
     }
+
+    logBlock('Auth/BOOTSTRAP_OUT', {
+      tenant,
+      isConfigured,
+      adminEmail: adminEmail || '(empty)',
+      computedRoles: roles,
+      computedFlags: flags,
+      serverTime: { iso: now.toISOString(), timezone: tz },
+    });
 
     return {
       user,
@@ -381,7 +472,10 @@ module.exports = cds.service.impl(async function () {
   this.on('Ping', () => 'pong');
 
   this.on('ResetSession', async (req) => {
-    console.log('🔴 [/auth/ResetSession] called.');
+    logBlock('Auth/RESET_SESSION', {
+      userId: req.user?.id || 'N/A',
+      tenant: req.tenant || 'N/A',
+    });
     return true;
   });
 
@@ -421,7 +515,7 @@ module.exports = cds.service.impl(async function () {
         btpCockpitUrl = generateBtpCockpitUrl(tenant, req);
       }
     } catch (e) {
-      console.warn('[Auth.RequestAccessMail] 테넌트 설정 조회 실패:', e.message);
+      logBlock('Auth/REQUEST_ACCESS/TENANTCONFIG_READ_FAIL', { message: e.message }, { level: 'warn' });
     }
 
     if (!adminEmail) {
@@ -431,7 +525,7 @@ module.exports = cds.service.impl(async function () {
         const adminUser = await tx.run(SELECT.one.from(User).where({ role: 'Administrator' }).orderBy('createdAt'));
         if (adminUser?.email) adminEmail = adminUser.email;
       } catch (e) {
-        console.warn('[Auth.RequestAccessMail] Administrator 이메일 조회 실패:', e.message);
+        logBlock('Auth/REQUEST_ACCESS/ADMINEMAIL_FALLBACK_FAIL', { message: e.message }, { level: 'warn' });
       }
     }
 
@@ -439,20 +533,31 @@ module.exports = cds.service.impl(async function () {
       return { ok: false, code: 'NO_ADMIN_EMAIL', message: '관리자 이메일이 설정되지 않아 권한 요청을 처리할 수 없습니다.', retryAfterDays: 0 };
     }
 
+    logBlock('Auth/REQUEST_ACCESS/MAIL_TARGET', {
+      tenant,
+      requestName: name || email,
+      requestEmail: email,
+      adminEmail,
+      companyName: companyName || '(none)',
+      btpCockpitUrl: btpCockpitUrl || '(none)',
+    });
+
     // 3) SMTP 설정
     const smtpConfig = getSmtpConfig();
 
-    // 운영 디버깅용 (비번 출력 금지)
-    console.log('[SMTP] resolved config:', smtpConfig
+    logBlock('SMTP/RESOLVED', smtpConfig
       ? {
+          source: smtpConfig._source,
           service: smtpConfig.service,
           host: smtpConfig.host,
           port: smtpConfig.port,
           secure: smtpConfig.secure,
           user: smtpConfig.auth?.user,
           from: smtpConfig.from,
+          // pass는 maskSecrets가 *** 처리함
+          pass: smtpConfig.auth?.pass
         }
-      : null
+      : { message: 'no smtp config' }
     );
 
     if (!smtpConfig) {
@@ -502,7 +607,7 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
 ${btpCockpitUrl ? `\nBTP Cockpit에서 역할 설정: ${btpCockpitUrl}` : ''}
       `.trim();
     } catch (templateError) {
-      console.warn('⚠️ [Auth.RequestAccessMail] 이메일 템플릿 로드 실패, 기본 텍스트 사용:', templateError.message);
+      logBlock('Auth/REQUEST_ACCESS/TEMPLATE_FAIL', { message: templateError.message }, { level: 'warn' });
       emailText = `
 요청자 이름: ${name || email}
 요청자 이메일: ${email}
@@ -526,7 +631,7 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
 
       const info = await transporter.sendMail(mailOptions);
 
-      console.log('✅ [Auth.RequestAccessMail] 메일 발송 성공!', {
+      logBlock('Auth/REQUEST_ACCESS/SENT', {
         messageId: info.messageId,
         to: adminEmail,
         from: mailOptions.from,
@@ -535,12 +640,11 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
 
       return { ok: true, code: 'OK', message: '권한 요청 메일이 발송되었습니다.', retryAfterDays: 30 };
     } catch (error) {
-      console.error('❌ [Auth.RequestAccessMail] 메일 발송 실패:', error);
-      console.error('  - 수신자:', adminEmail);
-      console.error(
-        '  - SMTP 설정:',
-        JSON.stringify(smtpConfig, null, 2).replace(/("pass":\s*)"[^"]*"/g, '$1"***"')
-      );
+      logBlock('Auth/REQUEST_ACCESS/SEND_FAIL', {
+        message: error.message,
+        to: adminEmail,
+        smtpConfig,
+      }, { level: 'error' });
 
       return { ok: false, code: 'MAIL_SEND_FAILED', message: `메일 발송 실패: ${error.message}`, retryAfterDays: 0 };
     }
@@ -553,9 +657,14 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
     const config = req.data.config;
     const tenant = req.tenant || req.user?.tenant || req.user?.attr?.zid || 'default';
 
-    console.log('📋 [Auth.SubmitTenantConfig] 테넌트 설정 제출:', {
+    logBlock('Auth/SUBMIT_TENANT_CONFIG/IN', {
       tenant,
-      companyName: config.companyName,
+      companyName: config?.companyName,
+      adminEmail: config?.adminEmail,
+      companyLogoUrl: config?.companyLogoUrl,
+      timezone: config?.timezone,
+      language: config?.language,
+      btpCockpitUrl: config?.btpCockpitUrl,
     });
 
     let uploadedLogoPath = null;
@@ -564,7 +673,6 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
       const tx = cds.transaction(req);
       const TenantConfig = cds.entities['TenantConfig'];
 
-      // 기존 설정 확인
       const existing = await tx.run(SELECT.one.from(TenantConfig).where({ id: tenant }));
 
       // 로고 파일 경로 저장 (롤백용)
@@ -579,7 +687,6 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
       let btpCockpitUrl = config.btpCockpitUrl;
       if (!btpCockpitUrl || (typeof btpCockpitUrl === 'string' && btpCockpitUrl.trim().length === 0)) {
         btpCockpitUrl = generateBtpCockpitUrl(tenant, req);
-        console.log('🔗 [Auth.SubmitTenantConfig] BTP Cockpit URL 자동 생성:', btpCockpitUrl);
       }
 
       const configData = {
@@ -594,23 +701,23 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
 
       if (existing) {
         await tx.run(UPDATE(TenantConfig).set(configData).where({ id: tenant }));
-        console.log('✅ [Auth.SubmitTenantConfig] 기존 설정 업데이트 완료');
+        logBlock('Auth/SUBMIT_TENANT_CONFIG/UPDATED', { tenant, ...configData });
       } else {
         await tx.run(INSERT.into(TenantConfig).entries({ id: tenant, ...configData }));
-        console.log('✅ [Auth.SubmitTenantConfig] 새 설정 생성 완료');
+        logBlock('Auth/SUBMIT_TENANT_CONFIG/CREATED', { tenant, ...configData });
       }
 
       return { ok: true, code: 'OK', message: '테넌트 설정이 완료되었습니다.' };
     } catch (error) {
-      console.error('❌ [Auth.SubmitTenantConfig] 설정 저장 실패:', error);
+      logBlock('Auth/SUBMIT_TENANT_CONFIG/FAIL', { message: error.message, uploadedLogoPath }, { level: 'error' });
 
       // 롤백: 업로드된 로고 파일 삭제
       if (uploadedLogoPath && fs.existsSync(uploadedLogoPath)) {
         try {
           fs.unlinkSync(uploadedLogoPath);
-          console.log('🔄 [Auth.SubmitTenantConfig] 롤백: 업로드된 로고 파일 삭제:', uploadedLogoPath);
+          logBlock('Auth/SUBMIT_TENANT_CONFIG/ROLLBACK_LOGO_DELETED', { uploadedLogoPath });
         } catch (fileError) {
-          console.error('❌ [Auth.SubmitTenantConfig] 로고 파일 삭제 실패:', fileError);
+          logBlock('Auth/SUBMIT_TENANT_CONFIG/ROLLBACK_LOGO_DELETE_FAIL', { message: fileError.message, uploadedLogoPath }, { level: 'error' });
         }
       }
 
