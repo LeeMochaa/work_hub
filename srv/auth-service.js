@@ -119,16 +119,19 @@ module.exports = cds.service.impl(async function () {
       body = safeJson(maskSecrets(data));
     }
 
-    const block =
-`==================== [${title}] ====================
-time: ${now}
-${body}
-=====================================================
-`;
+    // 여러 줄을 하나의 문자열로 묶어서 한 번에 출력
+    // BTP/CF 환경에서도 제대로 출력되도록 \n으로 줄바꿈
+    const block = `==================== [${title}] ====================\ntime: ${now}\n${body}\n=====================================================\n`;
 
     // console[level] 사용 (log/warn/error)
-    const fn = console[level] || console.log;
-    fn(block);
+    // BTP/CF 환경에서도 제대로 출력되도록 직접 호출
+    if (level === 'warn') {
+      console.warn(block);
+    } else if (level === 'error') {
+      console.error(block);
+    } else {
+      console.log(block);
+    }
   };
 
   // base64url payload decode
