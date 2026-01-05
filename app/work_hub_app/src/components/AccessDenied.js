@@ -80,8 +80,8 @@ export default function AccessDenied({ user, Auth, adminEmail }) {
     setSending(true);
     try {
       const res = await Auth.base.call('RequestAccessMail', {
-        email: user.id,
-        name: user.name
+        email: email, // user.email || user.id (이미 위에서 추출됨)
+        name: name
       });
 
       // 정상 성공

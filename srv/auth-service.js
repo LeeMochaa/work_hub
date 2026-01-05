@@ -486,9 +486,26 @@ module.exports = cds.service.impl(async function () {
   // ✅ 권한 요청 메일 (단일 SMTP / From 고정 / Reply-To 요청자)
   // =====================================================
   this.on('RequestAccessMail', async (req) => {
-    const { email, name } = req.data;
+    // req.data에서 이메일/이름을 받되, 없으면 req.user에서 추출
+    let email = req.data?.email;
+    let name = req.data?.name;
+
+    // req.data에 이메일이 없으면 req.user에서 추출
+    if (!email && req.user) {
+      const userProfile = getUserProfile(req);
+      email = userProfile.email;
+      name = name || userProfile.name;
+    }
 
     if (!email) {
+      logBlock('Auth/REQUEST_ACCESS/NO_EMAIL', {
+        reqData: req.data,
+        reqUser: req.user ? {
+          id: req.user.id,
+          name: req.user.name,
+          attr: req.user.attr
+        } : null
+      }, { level: 'warn' });
       return { ok: false, code: 'NO_EMAIL', message: '이메일 정보가 없어 권한 요청을 처리할 수 없습니다.', retryAfterDays: 0 };
     }
 
