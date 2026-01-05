@@ -4,7 +4,9 @@
     "@sap/approuter": "^20.0.0"
   },
   "scripts": {
-    "start": "node node_modules/@sap/approuter/approuter.js"
+    "start": "node node_modules/@sap/approuter/approuter.js",
+    "clean": "node -e \"const fs=require('fs');const path=require('path');function rmDir(dir){if(fs.existsSync(dir)){fs.readdirSync(dir).forEach(f=>{const p=path.join(dir,f);fs.lstatSync(p).isDirectory()?rmDir(p):fs.unlinkSync(p);});fs.rmdirSync(dir);}};['resources/static','resources/index.html','resources/asset-manifest.json'].forEach(f=>{if(fs.existsSync(f)){fs.lstatSync(f).isDirectory()?rmDir(f):fs.unlinkSync(f);}});\"",
+    "prebuild": "npm run clean"
   }
 }
 

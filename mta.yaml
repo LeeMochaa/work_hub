@@ -61,6 +61,13 @@ modules:
           forwardAuthToken: true
 
     build-parameters:
+      before-all:
+        - builder: custom
+          commands:
+            # resources 폴더의 이전 빌드 파일 정리 (static 폴더만 삭제)
+            - if [ -d "resources/static" ]; then rm -rf resources/static; fi
+            - if [ -f "resources/index.html" ]; then rm -f resources/index.html; fi
+            - if [ -f "resources/asset-manifest.json" ]; then rm -f resources/asset-manifest.json; fi
       requires:
         - name: work_hub-react-builder
           artifacts:
