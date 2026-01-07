@@ -11,5 +11,4 @@ using from './Effort';
 using from './WorkStatus';
 using from './Notification';
 using from './TenantConfig';
-using from './TenantLogo';
 

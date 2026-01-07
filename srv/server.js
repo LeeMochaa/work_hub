@@ -233,10 +233,24 @@ cds.on('bootstrap', (app) => {
 });
 
 /* =========================================================
- * Served - CAP의 인증 미들웨어 이후에 라우트 등록
+ * Served - CAP의 인증 미들웨어 이후에 라우트 등록 (✅ 1개만 유지)
  * ========================================================= */
 cds.on('served', () => {
   const app = cds.app;
+
+  // XSUAA 인증 미들웨어 생성
+  const authMiddleware = createAuthMiddleware();
+
+  // ✅ Entity helper (namespace 포함 안전하게 찾기)
+  const getTenantConfigEntity = () => {
+    // 보통 namespace를 쓰면 workhub.TenantConfig 로 등록됨
+    return (
+      cds.entities['workhub.TenantConfig'] ||
+      cds.entities['TenantConfig'] ||
+      cds.entities?.workhub?.TenantConfig || // 혹시 이런 형태면
+      null
+    );
+  };
 
   /* =======================================================
    * ConfirmEnvSetup (existing)
@@ -246,18 +260,17 @@ cds.on('served', () => {
       const tenant = req.query.tenant;
       if (!tenant) {
         return res.status(400).send(`
-          <html>
-          <head><meta charset="UTF-8"><title>오류</title></head>
+          <html><head><meta charset="UTF-8"><title>오류</title></head>
           <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
             <h2 style="color: #d32f2f;">오류</h2>
             <p>테넌트 ID가 필요합니다.</p>
-          </body>
-          </html>
+          </body></html>
         `);
       }
 
       const { SELECT } = cds.ql;
-      const TenantConfig = cds.entities['TenantConfig'];
+      const TenantConfig = getTenantConfigEntity();
+      if (!TenantConfig) return res.status(500).send('TenantConfig 엔티티를 찾을 수 없습니다.');
 
       const tenantConfig = await cds.run(
         SELECT.one.from(TenantConfig).where({ id: tenant })
@@ -265,13 +278,11 @@ cds.on('served', () => {
 
       if (!tenantConfig) {
         return res.status(404).send(`
-          <html>
-          <head><meta charset="UTF-8"><title>오류</title></head>
+          <html><head><meta charset="UTF-8"><title>오류</title></head>
           <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
             <h2 style="color: #d32f2f;">오류</h2>
             <p>테넌트 설정을 찾을 수 없습니다.</p>
-          </body>
-          </html>
+          </body></html>
         `);
       }
 
@@ -301,13 +312,11 @@ cds.on('served', () => {
     } catch (error) {
       console.error('❌ [ConfirmEnvSetup] 확인 페이지 로드 실패:', error);
       res.status(500).send(`
-        <html>
-        <head><meta charset="UTF-8"><title>오류</title></head>
+        <html><head><meta charset="UTF-8"><title>오류</title></head>
         <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
           <h2 style="color: #d32f2f;">오류</h2>
           <p>처리 중 오류가 발생했습니다: ${error.message}</p>
-        </body>
-        </html>
+        </body></html>
       `);
     }
   });
@@ -320,18 +329,17 @@ cds.on('served', () => {
       const tenant = req.query.tenant;
       if (!tenant) {
         return res.status(400).send(`
-          <html>
-          <head><meta charset="UTF-8"><title>오류</title></head>
+          <html><head><meta charset="UTF-8"><title>오류</title></head>
           <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
             <h2 style="color: #d32f2f;">오류</h2>
             <p>테넌트 ID가 필요합니다.</p>
-          </body>
-          </html>
+          </body></html>
         `);
       }
 
       const { SELECT, UPDATE } = cds.ql;
-      const TenantConfig = cds.entities['TenantConfig'];
+      const TenantConfig = getTenantConfigEntity();
+      if (!TenantConfig) return res.status(500).send('TenantConfig 엔티티를 찾을 수 없습니다.');
 
       const tenantConfig = await cds.run(
         SELECT.one.from(TenantConfig).where({ id: tenant })
@@ -339,13 +347,11 @@ cds.on('served', () => {
 
       if (!tenantConfig) {
         return res.status(404).send(`
-          <html>
-          <head><meta charset="UTF-8"><title>오류</title></head>
+          <html><head><meta charset="UTF-8"><title>오류</title></head>
           <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
             <h2 style="color: #d32f2f;">오류</h2>
             <p>테넌트 설정을 찾을 수 없습니다.</p>
-          </body>
-          </html>
+          </body></html>
         `);
       }
 
@@ -353,7 +359,7 @@ cds.on('served', () => {
         UPDATE(TenantConfig).set({ envConfigured: true }).where({ id: tenant })
       );
 
-      console.log(`✅ [SetEnvConfigured] 테넌트 ${tenant}의 환경변수 설정 완료 처리`);
+      console.log(`✅ [SetEnvConfigured] tenant=${tenant} envConfigured=true`);
 
       const completeTemplate = loadEmailTemplate('env-setup-complete');
       const completeHtml = renderTemplate(completeTemplate, {
@@ -366,74 +372,75 @@ cds.on('served', () => {
     } catch (error) {
       console.error('❌ [SetEnvConfigured] 환경변수 설정 완료 처리 실패:', error);
       res.status(500).send(`
-        <html>
-        <head><meta charset="UTF-8"><title>오류</title></head>
+        <html><head><meta charset="UTF-8"><title>오류</title></head>
         <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
           <h2 style="color: #d32f2f;">오류</h2>
           <p>처리 중 오류가 발생했습니다: ${error.message}</p>
-        </body>
-        </html>
+        </body></html>
       `);
     }
   });
-});
-
-/* =========================================================
- * Served - CAP의 인증 미들웨어 이후에 라우트 등록
- * ========================================================= */
-cds.on('served', () => {
-  const app = cds.app;
-
-  // XSUAA 인증 미들웨어 생성
-  const authMiddleware = createAuthMiddleware();
 
   /* =======================================================
-   * Logo upload (ADMIN/SYSADMIN only) - BLOB 저장
+   * ✅ Logo upload (ADMIN/SYSADMIN only) - TenantConfig에 BLOB 저장
    * ======================================================= */
-  app.post('/api/logo', authMiddleware, checkAdminPermission, upload.single('logo'), async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: '파일이 업로드되지 않았습니다.' });
+  app.post(
+    '/api/logo',
+    authMiddleware,
+    checkAdminPermission,
+    upload.single('logo'),
+    async (req, res) => {
+      try {
+        if (!req.file) return res.status(400).json({ error: '파일이 업로드되지 않았습니다.' });
 
-      const tenantId = getTenantId(req);
-      if (!tenantId) return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
+        const tenantId = getTenantId(req);
+        if (!tenantId) return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
 
-      const { UPSERT } = cds.ql;
-      const TenantLogo = cds.entities['TenantLogo'];
-      if (!TenantLogo) return res.status(500).json({ error: 'TenantLogo 엔티티를 찾을 수 없습니다.' });
+        const { SELECT, INSERT, UPDATE } = cds.ql;
+        const TenantConfig = getTenantConfigEntity();
+        if (!TenantConfig) return res.status(500).json({ error: 'TenantConfig 엔티티를 찾을 수 없습니다.' });
 
-      // ✅ 멀티테넌트 컨텍스트 반영
-      const tx = cds.transaction(req);
+        const tx = cds.transaction(req);
 
-      await tx.run(
-        UPSERT.into(TenantLogo).entries({
-          id: tenantId,
-          content: req.file.buffer,
-          contentType: req.file.mimetype,
-          filename: req.file.originalname,
-          size: req.file.size
-        })
-      );
+        // row 없으면 먼저 생성(최소 row 확보)
+        const exists = await tx.run(
+          SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId })
+        );
 
-      console.log('✅ [Logo] 업로드 완료(DB 저장):', {
-        tenantId,
-        filename: req.file.originalname,
-        contentType: req.file.mimetype,
-        size: req.file.size
-      });
+        if (!exists) {
+          await tx.run(
+            INSERT.into(TenantConfig).entries({ id: tenantId, isConfigured: false })
+          );
+        }
 
-      return res.json({
-        success: true,
-        message: '로고가 성공적으로 업로드되었습니다.',
-        url: '/api/logo'
-      });
-    } catch (error) {
-      console.error('❌ [Logo] 업로드 실패:', error);
-      return res.status(500).json({ error: error.message || '파일 업로드 중 오류가 발생했습니다.' });
+        await tx.run(
+          UPDATE(TenantConfig).set({
+            logoContent: req.file.buffer,
+            logoContentType: req.file.mimetype,
+            logoFilename: req.file.originalname,
+            logoSize: req.file.size
+          }).where({ id: tenantId })
+        );
+
+        // ✅ 로그도 한 줄로 깔끔하게
+        console.log(
+          `✅ [Logo] saved tenant=${tenantId} file=${req.file.originalname} type=${req.file.mimetype} size=${req.file.size}`
+        );
+
+        return res.json({
+          success: true,
+          message: '로고가 성공적으로 업로드되었습니다.',
+          url: '/api/logo'
+        });
+      } catch (error) {
+        console.error('❌ [Logo] 업로드 실패:', error);
+        return res.status(500).json({ error: error.message || '파일 업로드 중 오류가 발생했습니다.' });
+      }
     }
-  });
+  );
 
   /* =======================================================
-   * Logo get (tenant specific)
+   * ✅ Logo get (tenant specific) - TenantConfig에서 조회
    * ======================================================= */
   app.get('/api/logo', authMiddleware, async (req, res) => {
     try {
@@ -441,30 +448,31 @@ cds.on('served', () => {
       if (!tenantId) return res.status(400).json({ error: '테넌트 ID를 확인할 수 없습니다.' });
 
       const { SELECT } = cds.ql;
-      const TenantLogo = cds.entities['TenantLogo'];
-      if (!TenantLogo) return res.status(500).json({ error: 'TenantLogo 엔티티를 찾을 수 없습니다.' });
+      const TenantConfig = getTenantConfigEntity();
+      if (!TenantConfig) return res.status(500).json({ error: 'TenantConfig 엔티티를 찾을 수 없습니다.' });
 
       const tx = cds.transaction(req);
 
-      const logo = await tx.run(
-        SELECT.one.from(TenantLogo).columns('content', 'contentType', 'modifiedAt').where({ id: tenantId })
+      const row = await tx.run(
+        SELECT.one.from(TenantConfig)
+          .columns('logoContent', 'logoContentType', 'modifiedAt')
+          .where({ id: tenantId })
       );
 
-      if (!logo?.content) {
+      if (!row?.logoContent) {
         return res.status(404).json({ error: '로고를 찾을 수 없습니다.', useDefault: true });
       }
 
-      // 캐싱
-      res.setHeader('Content-Type', logo.contentType || 'image/png');
+      res.setHeader('Content-Type', row.logoContentType || 'image/png');
       res.setHeader('Cache-Control', 'public, max-age=3600');
 
-      if (logo.modifiedAt) {
-        const etag = `"${new Date(logo.modifiedAt).getTime()}"`;
+      if (row.modifiedAt) {
+        const etag = `"${new Date(row.modifiedAt).getTime()}"`;
         res.setHeader('ETag', etag);
         if (req.headers['if-none-match'] === etag) return res.status(304).end();
       }
 
-      return res.send(Buffer.from(logo.content));
+      return res.send(Buffer.from(row.logoContent));
     } catch (error) {
       console.error('❌ [Logo] 조회 실패:', error);
       return res.status(500).json({ error: error.message || '로고 조회 중 오류가 발생했습니다.' });

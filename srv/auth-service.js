@@ -135,34 +135,37 @@ module.exports = cds.service.impl(async function () {
     const flags = computeFlags(req);
     const user = buildUser(req);
 
-    // ✅ 로그를 한 줄로 깔끔하게
+    const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+
+    const TenantConfig = cds.entities['TenantConfig'];
+
+    let tenantConfig = null;
+    if (tenantId && TenantConfig) {
+      try {
+        const tx = cds.transaction(req);
+        tenantConfig = await tx.run(
+          SELECT.one.from(TenantConfig).where({ id: tenantId })
+        );
+      } catch (e) {
+        logOneLine('BOOTSTRAP_TENANTCONFIG_READ_FAIL', {
+          tenantId,
+          error: e.message
+        }, { level: 'warn' });
+      }
+    }
+
+    const isConfigured = !!tenantConfig?.isConfigured;
+    const adminEmail = tenantConfig?.adminEmail || '';
+
     logOneLine('BOOTSTRAP', {
+      tenantId,
       method: req.method,
       path: req.path,
-      url: req.url,
-      tenant: req.tenant,
-      headers: {
-        // 보고 싶은 헤더만 추려서 (너무 많으면 로그가 길어짐)
-        'x-forwarded-host': req.headers?.['x-forwarded-host'],
-        'x-forwarded-path': req.headers?.['x-forwarded-path'],
-        'x-forwarded-proto': req.headers?.['x-forwarded-proto'],
-        'x-correlationid': req.headers?.['x-correlationid'],
-        'x-vcap-request-id': req.headers?.['x-vcap-request-id']
-      },
-      user: {
-        id: req.user?.id,
-        name: req.user?.name,
-        attr: req.user?.attr,
-        // 디버깅용: is() 결과만 간단히
-        is: (typeof req.user?.is === 'function') ? {
-          SYSADMIN: req.user.is('SYSADMIN'),
-          Administrator: req.user.is('Administrator'),
-          Leader: req.user.is('Leader'),
-          User: req.user.is('User'),
-          'authenticated-user': req.user.is('authenticated-user')
-        } : null
-      },
-      computedFlags: flags
+      user: { id: req.user?.id, name: req.user?.name },
+      computedFlags: flags,
+      tenantConfigFound: !!tenantConfig,
+      isConfigured,
+      adminEmail
     });
 
     return {
@@ -174,8 +177,8 @@ module.exports = cds.service.impl(async function () {
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
         iso: new Date().toISOString()
       },
-      adminEmail: '',
-      isConfigured: false
+      adminEmail,
+      isConfigured
     };
   });
 
@@ -247,16 +250,69 @@ module.exports = cds.service.impl(async function () {
   // SubmitTenantConfig (미구현)
   // =====================================================
   this.on('SubmitTenantConfig', async (req) => {
-    logOneLine('SUBMIT_TENANT_CONFIG', {
-      user: req.user?.id,
-      tenant: req.tenant,
-      data: req.data
-    });
+    const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+    if (!tenantId) {
+      return { ok: false, code: 'NO_TENANT', message: '테넌트 정보를 확인할 수 없습니다.' };
+    }
 
-    return {
-      ok: false,
-      code: 'NOT_IMPLEMENTED',
-      message: '구현 대기 중'
-    };
+    const flags = computeFlags(req);
+    if (!flags.ADMIN && !flags.SYSADMIN) {
+      return { ok: false, code: 'FORBIDDEN', message: 'Administrator 권한이 필요합니다.' };
+    }
+
+    const TenantConfig = cds.entities['TenantConfig'];
+    if (!TenantConfig) {
+      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.' };
+    }
+
+    const p = req.data || {};
+    const companyName = String(p.companyName || '').trim();
+    const timezone = String(p.timezone || 'Asia/Seoul').trim();
+    const language = String(p.language || 'ko').trim();
+    const adminEmail = String(p.adminEmail || '').trim();
+    const companyLogoUrl = String(p.companyLogoUrl || '/api/logo').trim();
+
+    if (!companyName) return { ok: false, code: 'VALIDATION', message: '회사명(companyName)은 필수입니다.' };
+    if (!adminEmail) return { ok: false, code: 'VALIDATION', message: '권한 요청 수신 이메일(adminEmail)은 필수입니다.' };
+
+    try {
+      const tx = cds.transaction(req);
+
+      const exists = await tx.run(
+        SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId })
+      );
+
+      if (!exists) {
+        await tx.run(
+          cds.ql.INSERT.into(TenantConfig).entries({
+            id: tenantId,
+            companyName,
+            companyLogoUrl,
+            timezone,
+            language,
+            adminEmail,
+            isConfigured: true
+          })
+        );
+      } else {
+        await tx.run(
+          cds.ql.UPDATE(TenantConfig).set({
+            companyName,
+            companyLogoUrl,
+            timezone,
+            language,
+            adminEmail,
+            isConfigured: true
+          }).where({ id: tenantId })
+        );
+      }
+
+      logOneLine('SUBMIT_TENANT_CONFIG_OK', { tenantId, companyName, timezone, language, adminEmail });
+
+      return { ok: true };
+    } catch (e) {
+      logOneLine('SUBMIT_TENANT_CONFIG_FAIL', { tenantId, error: e.message }, { level: 'error' });
+      return { ok: false, code: 'ERROR', message: e.message || '저장 중 오류가 발생했습니다.' };
+    }
   });
 });
