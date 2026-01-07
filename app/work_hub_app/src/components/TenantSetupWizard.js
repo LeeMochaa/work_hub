@@ -203,7 +203,7 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
 
       const config = {
         companyName: companyName.trim(),
-        companyLogoUrl: '/api/logo',  // DB에서 동적으로 조회하므로 고정 URL 사용
+        companyLogoUrl: '/odata/v4/auth/GetLogo()',  // auth-service의 GetLogo 함수 사용
         timezone: timezone,
         language: language,
         adminEmail: adminEmail.trim()

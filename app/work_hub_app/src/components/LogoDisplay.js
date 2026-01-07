@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { FlexBox, FlexBoxDirection, FlexBoxJustifyContent, FlexBoxAlignItems } from '@ui5/webcomponents-react';
+import { useModel } from '../model/ModelProvider';
 
 export default function LogoDisplay({ style = {} }) {
+  const Auth = useModel('Auth');
   const [logoUrl, setLogoUrl] = useState(null);
   const [hasLogo, setHasLogo] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -11,30 +13,19 @@ export default function LogoDisplay({ style = {} }) {
       try {
         setLoading(true);
         
-        // 현재 URL에서 base URL 추출
-        const baseUrl = window.location.origin;
-        const logoApiUrl = `${baseUrl}/api/logo`;
+        // Auth.getLogo()를 통해 로고 가져오기
+        const logoBase64 = await Auth.getLogo();
         
-        // 로고 존재 여부 확인
-        const response = await fetch(logoApiUrl, {
-          method: 'GET',
-          credentials: 'include',
-          headers: {
-            'Accept': 'image/*'
-          }
-        });
-
-        if (response.ok && response.status !== 404) {
-          // 로고가 있으면 blob URL 생성
-          const blob = await response.blob();
-          const url = URL.createObjectURL(blob);
-          setLogoUrl(url);
+        if (logoBase64) {
+          // base64 data URI를 그대로 사용
+          setLogoUrl(logoBase64);
           setHasLogo(true);
         } else {
           // 로고가 없음
           setHasLogo(false);
         }
       } catch (error) {
+        // 404나 다른 에러는 로고가 없는 것으로 처리
         console.warn('[LogoDisplay] 로고 로드 실패:', error);
         setHasLogo(false);
       } finally {
@@ -43,14 +34,7 @@ export default function LogoDisplay({ style = {} }) {
     };
 
     fetchLogo();
-
-    // cleanup: blob URL 해제
-    return () => {
-      if (logoUrl) {
-        URL.revokeObjectURL(logoUrl);
-      }
-    };
-  }, []);
+  }, [Auth]);
 
   if (loading) {
     return (

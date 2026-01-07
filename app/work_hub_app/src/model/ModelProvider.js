@@ -317,22 +317,12 @@ export class AuthModel {
   }
 
   async getLogo() {
-    // 바이너리 반환을 위해 직접 fetch 사용
-    const url = `${this.base.client.baseUrl}/GetLogo()`;
-    const res = await this.base.client.fetch(url, {
-      method: 'GET'
-    });
+    const res = await this.base.call('GetLogo', undefined, 'GET');
     if (!res.ok) {
-      const json = await res.json().catch(() => ({}));
-      const err = new Error(`[GetLogo] ${res.status} ${res.statusText}`);
-      err.status = res.status;
-      err.statusText = res.statusText;
-      err.data = json;
-      throw err;
+      throw new Error(res.message || '로고를 가져올 수 없습니다.');
     }
-    // 바이너리 반환
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    // base64 data URI 반환
+    return res.logoBase64;
   }
 }
 

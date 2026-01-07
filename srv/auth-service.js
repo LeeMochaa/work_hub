@@ -504,17 +504,17 @@ module.exports = cds.service.impl(async function () {
   });
 
   // =====================================================
-  // GetLogo (로고 조회 - 바이너리 직접 반환)
+  // GetLogo (로고 조회 - base64 data URI 반환)
   // =====================================================
   this.on('GetLogo', async (req) => {
     const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
     if (!tenantId) {
-      return req.error(400, '테넌트 ID를 확인할 수 없습니다.');
+      return { ok: false, code: 'NO_TENANT', message: '테넌트 ID를 확인할 수 없습니다.', useDefault: true };
     }
 
     const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
     if (!TenantConfig) {
-      return req.error(500, 'TenantConfig 엔티티를 찾을 수 없습니다.');
+      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.', useDefault: true };
     }
 
     try {
@@ -527,34 +527,31 @@ module.exports = cds.service.impl(async function () {
       );
 
       if (!row?.logoContent) {
-        return req.error(404, '로고를 찾을 수 없습니다.');
+        return { ok: false, code: 'NOT_FOUND', message: '로고를 찾을 수 없습니다.', useDefault: true };
       }
 
-      const logoBuffer = Buffer.from(row.logoContent);
+      const logoBase64 = Buffer.from(row.logoContent).toString('base64');
       const contentType = row.logoContentType || 'image/png';
+      const dataUri = `data:${contentType};base64,${logoBase64}`;
 
       logOneLine('GET_LOGO_OK', {
         tenantId,
         filename: row.logoFilename,
         contentType,
-        size: logoBuffer.length
+        size: row.logoContent?.length || 0
       });
 
-      // 바이너리 직접 반환 (req.reply 사용 시 반환값 없음)
-      req.reply(logoBuffer, {
-        type: contentType,
-        headers: {
-          'Cache-Control': 'public, max-age=3600',
-          ...(row.modifiedAt && {
-            'ETag': `"${new Date(row.modifiedAt).getTime()}"`
-          })
-        }
-      });
-      // req.reply() 사용 시 명시적으로 반환하지 않음
-      return;
+      return {
+        ok: true,
+        logoBase64: dataUri,
+        contentType,
+        filename: row.logoFilename || 'logo.png',
+        modifiedAt: row.modifiedAt ? new Date(row.modifiedAt).toISOString() : null,
+        useDefault: false
+      };
     } catch (e) {
       logOneLine('GET_LOGO_FAIL', { tenantId, error: e.message }, { level: 'error' });
-      return req.error(500, e.message || '로고 조회 중 오류가 발생했습니다.');
+      return { ok: false, code: 'ERROR', message: e.message || '로고 조회 중 오류가 발생했습니다.', useDefault: true };
     }
   });
 });
