@@ -540,7 +540,7 @@ module.exports = cds.service.impl(async function () {
         size: logoBuffer.length
       });
 
-      // 바이너리 직접 반환
+      // 바이너리 직접 반환 (req.reply 사용 시 반환값 없음)
       req.reply(logoBuffer, {
         type: contentType,
         headers: {
@@ -550,6 +550,8 @@ module.exports = cds.service.impl(async function () {
           })
         }
       });
+      // req.reply() 사용 시 명시적으로 반환하지 않음
+      return;
     } catch (e) {
       logOneLine('GET_LOGO_FAIL', { tenantId, error: e.message }, { level: 'error' });
       return req.error(500, e.message || '로고 조회 중 오류가 발생했습니다.');

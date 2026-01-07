@@ -108,7 +108,8 @@ service AuthService @(
 
   action UploadLogo(logo: UploadLogoInput) returns UploadLogoResult;
 
-  // 로고 조회 (바이너리 직접 반환)
+  // 로고 조회 (바이너리 직접 반환 - req.reply 사용)
+  // 반환 타입 없음: req.reply()로 바이너리 직접 반환
   function GetLogo();
 }
 
