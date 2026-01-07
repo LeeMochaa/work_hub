@@ -304,6 +304,36 @@ export class AuthModel {
     this.clearCache();
     return res;
   }
+
+  async uploadLogo(logoBase64, logoContentType, logoFilename) {
+    const payload = {
+      logo: {
+        logoBase64,
+        logoContentType,
+        logoFilename
+      }
+    };
+    return await this.base.call('UploadLogo', payload, 'POST');
+  }
+
+  async getLogo() {
+    // 바이너리 반환을 위해 직접 fetch 사용
+    const url = `${this.base.client.baseUrl}/GetLogo()`;
+    const res = await this.base.client.fetch(url, {
+      method: 'GET'
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      const err = new Error(`[GetLogo] ${res.status} ${res.statusText}`);
+      err.status = res.status;
+      err.statusText = res.statusText;
+      err.data = json;
+      throw err;
+    }
+    // 바이너리 반환
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  }
 }
 
 // -------------------------------------------------------

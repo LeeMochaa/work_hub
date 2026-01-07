@@ -1,5 +1,7 @@
 const cds = require('@sap/cds');
-const { SELECT } = cds.ql;
+const { SELECT, UPDATE, INSERT } = cds.ql;
+const path = require('path');
+const fs = require('fs');
 
 // =====================================================
 // Helper: Safe JSON stringify (순환 참조 방지)
@@ -121,6 +123,28 @@ const extractRoles = (req) => {
   const rolesObj = req.user?.roles;
   if (!rolesObj || typeof rolesObj !== 'object') return [];
   return Object.keys(rolesObj);
+};
+
+// =====================================================
+// Helper: Email template helpers
+// =====================================================
+const loadEmailTemplate = (templateName) => {
+  const templatePath = path.resolve(__dirname, 'email', `${templateName}.html`);
+  try {
+    return fs.readFileSync(templatePath, 'utf8');
+  } catch (error) {
+    logOneLine('EMAIL_TEMPLATE_LOAD_FAIL', { templateName, error: error.message }, { level: 'error' });
+    throw error;
+  }
+};
+
+const renderTemplate = (template, variables) => {
+  let rendered = template;
+  for (const [key, value] of Object.entries(variables)) {
+    const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
+    rendered = rendered.replace(regex, value ?? '');
+  }
+  return rendered;
 };
 
 // =====================================================
@@ -313,6 +337,222 @@ module.exports = cds.service.impl(async function () {
     } catch (e) {
       logOneLine('SUBMIT_TENANT_CONFIG_FAIL', { tenantId, error: e.message }, { level: 'error' });
       return { ok: false, code: 'ERROR', message: e.message || '저장 중 오류가 발생했습니다.' };
+    }
+  });
+
+  // =====================================================
+  // SetEnvConfigured (환경 설정 완료 처리 - HTML 반환)
+  // =====================================================
+  this.on('SetEnvConfigured', async (req) => {
+    const tenantId = req.data?.tenant || req.query?.tenant || req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+    if (!tenantId) {
+      const errorHtml = `
+        <html><head><meta charset="UTF-8"><title>오류</title></head>
+        <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
+          <h2 style="color: #d32f2f;">오류</h2>
+          <p>테넌트 ID가 필요합니다.</p>
+        </body></html>
+      `;
+      return req.reply(errorHtml, { type: 'text/html', status: 400 });
+    }
+
+    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
+    if (!TenantConfig) {
+      const errorHtml = `
+        <html><head><meta charset="UTF-8"><title>오류</title></head>
+        <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
+          <h2 style="color: #d32f2f;">오류</h2>
+          <p>TenantConfig 엔티티를 찾을 수 없습니다.</p>
+        </body></html>
+      `;
+      return req.reply(errorHtml, { type: 'text/html', status: 500 });
+    }
+
+    try {
+      const tx = cds.transaction(req);
+
+      const tenantConfig = await tx.run(
+        SELECT.one.from(TenantConfig).where({ id: tenantId })
+      );
+
+      if (!tenantConfig) {
+        const errorHtml = `
+          <html><head><meta charset="UTF-8"><title>오류</title></head>
+          <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
+            <h2 style="color: #d32f2f;">오류</h2>
+            <p>테넌트 설정을 찾을 수 없습니다.</p>
+          </body></html>
+        `;
+        return req.reply(errorHtml, { type: 'text/html', status: 404 });
+      }
+
+      await tx.run(
+        UPDATE(TenantConfig).set({ envConfigured: true }).where({ id: tenantId })
+      );
+
+      logOneLine('SET_ENV_CONFIGURED_OK', { tenantId });
+
+      const completeTemplate = loadEmailTemplate('env-setup-complete');
+      const completeHtml = renderTemplate(completeTemplate, {
+        tenant: tenantId,
+        companyName: tenantConfig.companyName || '(없음)',
+        completedAt: new Date().toLocaleString('ko-KR')
+      });
+
+      return req.reply(completeHtml, { type: 'text/html' });
+    } catch (e) {
+      logOneLine('SET_ENV_CONFIGURED_FAIL', { tenantId, error: e.message }, { level: 'error' });
+      const errorHtml = `
+        <html><head><meta charset="UTF-8"><title>오류</title></head>
+        <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
+          <h2 style="color: #d32f2f;">오류</h2>
+          <p>처리 중 오류가 발생했습니다: ${e.message}</p>
+        </body></html>
+      `;
+      return req.reply(errorHtml, { type: 'text/html', status: 500 });
+    }
+  });
+
+  // =====================================================
+  // UploadLogo (로고 업로드 - ADMIN/SYSADMIN only)
+  // =====================================================
+  this.on('UploadLogo', async (req) => {
+    const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+    if (!tenantId) {
+      return { ok: false, code: 'NO_TENANT', message: '테넌트 ID를 확인할 수 없습니다.' };
+    }
+
+    const flags = computeFlags(req);
+    if (!flags.ADMIN && !flags.SYSADMIN) {
+      return { ok: false, code: 'FORBIDDEN', message: 'Administrator 또는 SYSADMIN 권한이 필요합니다.' };
+    }
+
+    const p = req.data || {};
+    const logoBase64 = p.logoBase64 || '';
+    const logoContentType = p.logoContentType || 'image/png';
+    const logoFilename = p.logoFilename || 'logo.png';
+
+    if (!logoBase64) {
+      return { ok: false, code: 'VALIDATION', message: '로고 데이터(logoBase64)가 필요합니다.' };
+    }
+
+    // base64 디코딩
+    let logoBuffer;
+    try {
+      // data:image/png;base64,xxx 형태일 수 있으니 처리
+      const base64Data = logoBase64.includes(',') ? logoBase64.split(',')[1] : logoBase64;
+      logoBuffer = Buffer.from(base64Data, 'base64');
+    } catch (e) {
+      return { ok: false, code: 'INVALID_BASE64', message: '유효하지 않은 base64 데이터입니다.' };
+    }
+
+    // 파일 크기 체크 (5MB)
+    if (logoBuffer.length > 5 * 1024 * 1024) {
+      return { ok: false, code: 'FILE_TOO_LARGE', message: '파일 크기는 5MB를 초과할 수 없습니다.' };
+    }
+
+    // MIME 타입 체크
+    const allowedMime = /^(image\/jpeg|image\/jpg|image\/png|image\/gif|image\/svg\+xml|image\/webp)$/i;
+    if (!allowedMime.test(logoContentType)) {
+      return { ok: false, code: 'INVALID_MIME', message: '이미지 파일만 업로드 가능합니다. (jpeg, jpg, png, gif, svg, webp)' };
+    }
+
+    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
+    if (!TenantConfig) {
+      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.' };
+    }
+
+    try {
+      const tx = cds.transaction(req);
+
+      // row 없으면 먼저 생성(최소 row 확보)
+      const exists = await tx.run(
+        SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId })
+      );
+
+      if (!exists) {
+        await tx.run(
+          INSERT.into(TenantConfig).entries({ id: tenantId, isConfigured: false })
+        );
+      }
+
+      await tx.run(
+        UPDATE(TenantConfig).set({
+          logoContent: logoBuffer,
+          logoContentType,
+          logoFilename,
+          logoSize: logoBuffer.length
+        }).where({ id: tenantId })
+      );
+
+      logOneLine('UPLOAD_LOGO_OK', {
+        tenantId,
+        filename: logoFilename,
+        contentType: logoContentType,
+        size: logoBuffer.length
+      });
+
+      return {
+        ok: true,
+        message: '로고가 성공적으로 업로드되었습니다.',
+        url: '/api/logo'
+      };
+    } catch (e) {
+      logOneLine('UPLOAD_LOGO_FAIL', { tenantId, error: e.message }, { level: 'error' });
+      return { ok: false, code: 'ERROR', message: e.message || '로고 업로드 중 오류가 발생했습니다.' };
+    }
+  });
+
+  // =====================================================
+  // GetLogo (로고 조회 - 바이너리 직접 반환)
+  // =====================================================
+  this.on('GetLogo', async (req) => {
+    const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+    if (!tenantId) {
+      return req.error(400, '테넌트 ID를 확인할 수 없습니다.');
+    }
+
+    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
+    if (!TenantConfig) {
+      return req.error(500, 'TenantConfig 엔티티를 찾을 수 없습니다.');
+    }
+
+    try {
+      const tx = cds.transaction(req);
+
+      const row = await tx.run(
+        SELECT.one.from(TenantConfig)
+          .columns('logoContent', 'logoContentType', 'logoFilename', 'modifiedAt')
+          .where({ id: tenantId })
+      );
+
+      if (!row?.logoContent) {
+        return req.error(404, '로고를 찾을 수 없습니다.');
+      }
+
+      const logoBuffer = Buffer.from(row.logoContent);
+      const contentType = row.logoContentType || 'image/png';
+
+      logOneLine('GET_LOGO_OK', {
+        tenantId,
+        filename: row.logoFilename,
+        contentType,
+        size: logoBuffer.length
+      });
+
+      // 바이너리 직접 반환
+      req.reply(logoBuffer, {
+        type: contentType,
+        headers: {
+          'Cache-Control': 'public, max-age=3600',
+          ...(row.modifiedAt && {
+            'ETag': `"${new Date(row.modifiedAt).getTime()}"`
+          })
+        }
+      });
+    } catch (e) {
+      logOneLine('GET_LOGO_FAIL', { tenantId, error: e.message }, { level: 'error' });
+      return req.error(500, e.message || '로고 조회 중 오류가 발생했습니다.');
     }
   });
 });

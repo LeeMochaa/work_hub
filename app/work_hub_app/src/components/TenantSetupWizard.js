@@ -166,56 +166,33 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
       if (logoFile) {
         setUploadingLogo(true);
         try {
-          const apiUrl = process.env.NODE_ENV === 'production'
-            ? '/api/logo'
-            : 'http://localhost:4004/api/logo';
-          
-          // CSRF 토큰 가져오기 (GET 요청)
-          let csrfToken = null;
-          try {
-            const csrfResponse = await fetch(apiUrl, {
-              method: 'GET',
-              credentials: 'include',
-              headers: {
-                'X-CSRF-Token': 'Fetch'
-              }
-            });
-            csrfToken = csrfResponse.headers.get('x-csrf-token');
-          } catch (csrfErr) {
-            console.warn('CSRF 토큰 가져오기 실패:', csrfErr);
-            // CSRF 토큰이 없어도 시도 (서버에서 csrfProtection: false로 설정되어 있을 수 있음)
-          }
-          
-          const formData = new FormData();
-          formData.append('logo', logoFile);
-          
-          const headers = {};
-          if (csrfToken) {
-            headers['X-CSRF-Token'] = csrfToken;
-          }
-          
-          const response = await fetch(apiUrl, {
-            method: 'POST',
-            body: formData,
-            credentials: 'include',  // 쿠키 포함 (인증용)
-            headers: headers
+          // 파일을 base64로 변환
+          const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              // data:image/png;base64,xxx 형태에서 base64 부분만 추출
+              const dataUrl = reader.result;
+              const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+              resolve(base64Data);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(logoFile);
           });
-          
-          if (!response.ok) {
-            let error;
-            try {
-              error = await response.json();
-            } catch (e) {
-              error = { error: `업로드 실패: ${response.status} ${response.statusText}` };
-            }
-            throw new Error(error.error || '업로드 실패');
+
+          const result = await Auth.uploadLogo(
+            base64,
+            logoFile.type || 'image/png',
+            logoFile.name || 'logo.png'
+          );
+
+          if (!result.ok) {
+            throw new Error(result.message || '로고 업로드에 실패했습니다.');
           }
-          const result = await response.json();
-          // 로고는 이제 DB에 저장되므로 URL은 /api/logo로 고정
+
           console.log('로고 업로드 완료:', result.message);
         } catch (err) {
           console.error('로고 업로드 실패:', err);
-          setError(err.message || '로고 업로드 중 오류가 발생했습니다.');
+          setError(err.message || err.data?.message || '로고 업로드 중 오류가 발생했습니다.');
           setUploadingLogo(false);
           setSubmitting(false);
           return;

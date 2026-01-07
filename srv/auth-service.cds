@@ -88,5 +88,27 @@ service AuthService @(
   }
 
   action SubmitTenantConfig(config: TenantConfigInput) returns TenantConfigResult;
+
+  // 환경 설정 완료 처리 (HTML 반환)
+  action SetEnvConfigured(tenant: String);
+
+  // 로고 업로드
+  type UploadLogoInput {
+    logoBase64     : LargeString;  // base64 인코딩된 이미지 데이터
+    logoContentType: String(100);  // image/png, image/jpeg 등
+    logoFilename   : String(255);  // 원본 파일명
+  }
+
+  type UploadLogoResult {
+    ok      : Boolean;
+    code    : String(30);
+    message : String(255);
+    url     : String(500);
+  }
+
+  action UploadLogo(logo: UploadLogoInput) returns UploadLogoResult;
+
+  // 로고 조회 (바이너리 직접 반환)
+  function GetLogo();
 }
 
