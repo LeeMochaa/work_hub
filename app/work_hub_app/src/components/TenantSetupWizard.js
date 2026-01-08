@@ -35,7 +35,7 @@ const TIMEZONE_OPTIONS = [
 ];
 
 export default function TenantSetupWizard({ onComplete, onCancel, Auth, user, bootstrap }) {
-  const { t, language: currentLanguage, setI18nLanguage } = useI18n();
+  const { t, language: currentLanguage, setLanguage: setI18nLanguage } = useI18n();
 
   // 언어 옵션 (동적)
   const LANGUAGE_OPTIONS = [
