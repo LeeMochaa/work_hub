@@ -77,25 +77,116 @@ const logOneLine = (title, payload, opts = {}) => {
 };
 
 // =====================================================
+// Helper: xsappname 가져오기
+// =====================================================
+const getXsappnameFromEnv = () => {
+  try {
+    if (process.env.VCAP_SERVICES) {
+      const vcap = JSON.parse(process.env.VCAP_SERVICES);
+      const xsuaa = (vcap.xsuaa || [])[0];
+      return xsuaa?.credentials?.xsappname || null;
+    }
+  } catch (e) {
+    console.warn('[Auth] VCAP_SERVICES parse failed:', e.message);
+  }
+  return null;
+};
+
+// =====================================================
+// Helper: user scopes 추출
+// =====================================================
+const extractUserScopes = (req) => {
+  const scopes = new Set();
+  
+  // xssec user.scopes 배열
+  if (Array.isArray(req.user?.scopes)) {
+    req.user.scopes.forEach((s) => scopes.add(String(s)));
+  }
+  
+  // roles 배열
+  if (Array.isArray(req.user?.roles)) {
+    req.user.roles.forEach((s) => scopes.add(String(s)));
+  }
+  
+  // roles 객체 map (XSUAA 패턴: {"openid":1,"User":1})
+  if (req.user?.roles && typeof req.user.roles === 'object' && !Array.isArray(req.user.roles)) {
+    Object.keys(req.user.roles).forEach((k) => scopes.add(String(k)));
+  }
+  
+  return scopes;
+};
+
+// =====================================================
 // Helper: user flags 계산
 // =====================================================
 const computeFlags = (req) => {
   const isFn = typeof req.user?.is === 'function';
   const is = (role) => (isFn ? !!req.user.is(role) : false);
 
-  return {
-    // 네 시스템에 SYSADMIN scope가 있으면 매핑, 없으면 그냥 false로 유지됨
-    SYSADMIN: is('SYSADMIN'),
+  // xsappname 가져오기 (work_hub 또는 실제 앱 이름)
+  const xsappname = getXsappnameFromEnv();
+  
+  // workhub의 scope 이름들 (xsappname 포함)
+  const workhubSYSADMIN = xsappname ? `${xsappname}.SYSADMIN` : 'work_hub.SYSADMIN';
+  const workhubAdministrator = xsappname ? `${xsappname}.Administrator` : 'work_hub.Administrator';
+  const workhubLeader = xsappname ? `${xsappname}.Leader` : 'work_hub.Leader';
+  const workhubUser = xsappname ? `${xsappname}.User` : 'work_hub.User';
 
-    // ✅ 프론트가 기대하는 "ADMIN"은 백엔드 role "Administrator"에서 매핑
-    ADMIN: is('Administrator'),
+  // extractUserScopes를 사용하여 실제 scope 확인
+  const scopes = extractUserScopes(req);
+  
+  // 디버깅: 실제 scope 목록 로깅
+  if (scopes.size > 0) {
+    logOneLine('[ComputeFlags] User scopes', {
+      xsappname,
+      scopes: Array.from(scopes),
+      workhubScopes: {
+        SYSADMIN: workhubSYSADMIN,
+        Administrator: workhubAdministrator,
+        Leader: workhubLeader,
+        User: workhubUser
+      }
+    }, { level: 'log' });
+  }
+  
+  // workhub의 scope인지 확인하는 helper
+  // 다른 시스템의 scope는 무시하고 오직 workhub의 scope만 체크
+  // ⚠️ 중요: is() 메서드를 fallback으로 사용하되, 정확한 전체 scope 이름으로만 체크
+  const hasWorkhubScope = (scopeName) => {
+    // 1순위: scope Set에 정확한 scope 이름이 있는지 확인 (가장 안전한 방법)
+    if (scopes.has(scopeName)) {
+      return true;
+    }
+    
+    // 2순위: req.user.is() 사용하되 전체 scope 이름으로만 체크
+    // 예: is('work_hub.User')는 OK, is('User')는 위험 (다른 시스템 scope 매칭될 수 있음)
+    // 전체 scope 이름으로 체크하면 정확하게 workhub scope만 체크됨
+    return is(scopeName);
+  };
+  
+  const flags = {
+    // workhub의 SYSADMIN scope만 체크 (다른 시스템의 SYSADMIN 무시)
+    SYSADMIN: hasWorkhubScope(workhubSYSADMIN),
 
-    LEADER: is('Leader'),
-    USER: is('User'),
+    // ✅ workhub의 Administrator scope만 체크 (다른 시스템의 Administrator 무시)
+    ADMIN: hasWorkhubScope(workhubAdministrator),
+
+    // workhub의 Leader scope만 체크 (다른 시스템의 Leader 무시)
+    LEADER: hasWorkhubScope(workhubLeader),
+    
+    // workhub의 User scope만 체크 (다른 시스템의 User scope 무시)
+    // ⚠️ 단순히 'User'로만 체크하면 다른 시스템의 'User' scope도 매칭되므로
+    // 반드시 workhub의 전체 scope 이름(예: 'work_hub.User')으로 체크
+    USER: hasWorkhubScope(workhubUser),
 
     // CAP/XSUAA에서 종종 authenticated-user scope가 있음
     AUTHENTICATED: is('authenticated-user') || !!req.user?.id
   };
+  
+  // 디버깅: 최종 flags 로깅
+  logOneLine('[ComputeFlags] Final flags', flags, { level: 'log' });
+  
+  return flags;
 };
 
 const buildUser = (req) => {
