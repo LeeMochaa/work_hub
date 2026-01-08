@@ -211,6 +211,8 @@ export default function App() {
         <TenantSetupWizard
           onComplete={handleSetupComplete}
           Auth={auth}
+          user={me}
+          bootstrap={boot}
         />
       )}
 

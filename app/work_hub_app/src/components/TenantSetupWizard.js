@@ -34,8 +34,8 @@ const TIMEZONE_OPTIONS = [
   { key: 'Europe/Berlin', label: 'Europe/Berlin (독일)' }
 ];
 
-export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
-  const { t, language: currentLanguage, setLanguage: setI18nLanguage } = useI18n();
+export default function TenantSetupWizard({ onComplete, onCancel, Auth, user, bootstrap }) {
+  const { t, language: currentLanguage, setI18nLanguage } = useI18n();
 
   // 언어 옵션 (동적)
   const LANGUAGE_OPTIONS = [
@@ -124,8 +124,8 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
     return () => clearInterval(interval);
   }, [timezone]);
 
-  // ADMIN 권한 요청 수신 이메일
-  const [adminEmail, setAdminEmail] = useState('');
+  // ADMIN 권한 요청 수신 이메일 (기본값: 현재 유저 이메일)
+  const [adminEmail, setAdminEmail] = useState(user?.email || bootstrap?.user?.email || '');
 
   // 유효성 검사
   const validateStep1 = () => {
@@ -162,13 +162,40 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
     setError(null);
 
     try {
+      // cockpitUrl 자동 생성 (현재 URL 기반)
+      const getCockpitUrl = () => {
+        const currentUrl = window.location.href;
+        try {
+          // URL에서 호스트 추출
+          const urlObj = new URL(currentUrl);
+          const host = urlObj.host;
+          
+          // 예: consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com
+          // 또는 localhost:3000 (개발 환경)
+          if (host.includes('localhost') || host.includes('127.0.0.1')) {
+            // 개발 환경에서는 null로 설정 (또는 개발용 URL)
+            return null;
+          }
+          
+          // 프로덕션 환경: https:// + host
+          return `https://${host}`;
+        } catch (e) {
+          console.warn('cockpitUrl 자동 생성 실패:', e);
+          return null;
+        }
+      };
+
       const config = {
         companyName: companyName.trim(),
         companyLogoUrl: '/odata/v4/auth/GetLogo()',  // auth-service의 GetLogo 함수 사용
         timezone: timezone,
         language: language,
-        adminEmail: adminEmail.trim()
+        adminEmail: adminEmail.trim(),
+        btpCockpitUrl: getCockpitUrl()
       };
+
+      // 디버깅: 전송되는 config 확인
+      console.log('[TenantSetupWizard] 전송할 config:', JSON.stringify(config, null, 2));
 
       // 로고 파일이 있으면 base64로 변환하여 포함
       if (logoFile) {

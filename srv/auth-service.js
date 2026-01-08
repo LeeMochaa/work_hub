@@ -290,13 +290,14 @@ module.exports = cds.service.impl(async function () {
     }
 
     const p = req.data || {};
-    // payload 구조: { config: { companyName, timezone, language, adminEmail, companyLogoUrl, logo? } }
+    // payload 구조: { config: { companyName, timezone, language, adminEmail, companyLogoUrl, btpCockpitUrl?, logo? } }
     const config = p.config || p;
     const companyName = String(config.companyName || '').trim();
     const timezone = String(config.timezone || 'Asia/Seoul').trim();
     const language = String(config.language || 'ko').trim();
     const adminEmail = String(config.adminEmail || '').trim();
     const companyLogoUrl = String(config.companyLogoUrl || '/odata/v4/auth/GetLogo()').trim();
+    const btpCockpitUrl = String(config.btpCockpitUrl || '').trim();
     const logoData = config.logo || null;
 
     if (!companyName) return { ok: false, code: 'VALIDATION', message: '회사명(companyName)은 필수입니다.' };
@@ -356,6 +357,7 @@ module.exports = cds.service.impl(async function () {
         timezone,
         language,
         adminEmail,
+        btpCockpitUrl: btpCockpitUrl || null,
         isConfigured: true
       };
 
