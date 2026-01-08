@@ -290,14 +290,58 @@ module.exports = cds.service.impl(async function () {
     }
 
     const p = req.data || {};
-    const companyName = String(p.companyName || '').trim();
-    const timezone = String(p.timezone || 'Asia/Seoul').trim();
-    const language = String(p.language || 'ko').trim();
-    const adminEmail = String(p.adminEmail || '').trim();
-    const companyLogoUrl = String(p.companyLogoUrl || '/api/logo').trim();
+    // payload 구조: { config: { companyName, timezone, language, adminEmail, companyLogoUrl, logo? } }
+    const config = p.config || p;
+    const companyName = String(config.companyName || '').trim();
+    const timezone = String(config.timezone || 'Asia/Seoul').trim();
+    const language = String(config.language || 'ko').trim();
+    const adminEmail = String(config.adminEmail || '').trim();
+    const companyLogoUrl = String(config.companyLogoUrl || '/odata/v4/auth/GetLogo()').trim();
+    const logoData = config.logo || null;
 
     if (!companyName) return { ok: false, code: 'VALIDATION', message: '회사명(companyName)은 필수입니다.' };
     if (!adminEmail) return { ok: false, code: 'VALIDATION', message: '권한 요청 수신 이메일(adminEmail)은 필수입니다.' };
+
+    // 로고 데이터가 있으면 검증 및 변환
+    let logoBuffer = null;
+    let logoContentType = null;
+    let logoFilename = null;
+    let logoSize = null;
+
+    if (logoData && logoData.logoBase64) {
+      const logoBase64 = logoData.logoBase64 || '';
+      logoContentType = logoData.logoContentType || 'image/png';
+      logoFilename = logoData.logoFilename || 'logo.png';
+
+      if (!logoBase64) {
+        return { ok: false, code: 'VALIDATION', message: '로고 데이터(logoBase64)가 필요합니다.' };
+      }
+
+      // base64 디코딩
+      try {
+        const base64Data = logoBase64.includes(',') ? logoBase64.split(',')[1] : logoBase64;
+        logoBuffer = Buffer.from(base64Data, 'base64');
+        logoSize = logoBuffer.length;
+      } catch (e) {
+        return { ok: false, code: 'INVALID_BASE64', message: '유효하지 않은 base64 데이터입니다.' };
+      }
+
+      // 파일 크기 체크 (5MB)
+      if (logoBuffer.length > 5 * 1024 * 1024) {
+        return { ok: false, code: 'FILE_TOO_LARGE', message: '파일 크기는 5MB를 초과할 수 없습니다.' };
+      }
+
+      // MIME 타입 체크
+      const allowedMime = /^(image\/jpeg|image\/jpg|image\/png|image\/gif|image\/svg\+xml|image\/webp)$/i;
+      if (!allowedMime.test(logoContentType)) {
+        return { ok: false, code: 'INVALID_MIME', message: '이미지 파일만 업로드 가능합니다. (jpeg, jpg, png, gif, svg, webp)' };
+      }
+    }
+
+    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
+    if (!TenantConfig) {
+      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.' };
+    }
 
     try {
       const tx = cds.transaction(req);
@@ -306,29 +350,51 @@ module.exports = cds.service.impl(async function () {
         SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId })
       );
 
+      const updateData = {
+        companyName,
+        companyLogoUrl,
+        timezone,
+        language,
+        adminEmail,
+        isConfigured: true
+      };
+
+      // 로고가 있으면 포함
+      if (logoBuffer) {
+        updateData.logoContent = logoBuffer;
+        updateData.logoContentType = logoContentType;
+        updateData.logoFilename = logoFilename;
+        updateData.logoSize = logoSize;
+      }
+
       if (!exists) {
         await tx.run(
           cds.ql.INSERT.into(TenantConfig).entries({
             id: tenantId,
-            companyName,
-            companyLogoUrl,
-            timezone,
-            language,
-            adminEmail,
-            isConfigured: true
+            ...updateData
           })
         );
       } else {
         await tx.run(
-          cds.ql.UPDATE(TenantConfig).set({
-            companyName,
-            companyLogoUrl,
-            timezone,
-            language,
-            adminEmail,
-            isConfigured: true
-          }).where({ id: tenantId })
+          cds.ql.UPDATE(TenantConfig).set(updateData).where({ id: tenantId })
         );
+      }
+
+      if (logoBuffer) {
+        logOneLine('SUBMIT_TENANT_CONFIG_WITH_LOGO_OK', {
+          tenantId,
+          companyName,
+          logoFilename,
+          logoSize
+        });
+      } else {
+        logOneLine('SUBMIT_TENANT_CONFIG_OK', {
+          tenantId,
+          companyName,
+          timezone,
+          language,
+          adminEmail
+        });
       }
 
       logOneLine('SUBMIT_TENANT_CONFIG_OK', { tenantId, companyName, timezone, language, adminEmail });

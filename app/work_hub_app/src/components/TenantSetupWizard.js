@@ -162,7 +162,15 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
     setError(null);
 
     try {
-      // 로고 파일이 있으면 최종 제출 시점에 업로드 (DB에 BLOB으로 저장)
+      const config = {
+        companyName: companyName.trim(),
+        companyLogoUrl: '/odata/v4/auth/GetLogo()',  // auth-service의 GetLogo 함수 사용
+        timezone: timezone,
+        language: language,
+        adminEmail: adminEmail.trim()
+      };
+
+      // 로고 파일이 있으면 base64로 변환하여 포함
       if (logoFile) {
         setUploadingLogo(true);
         try {
@@ -179,20 +187,14 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
             reader.readAsDataURL(logoFile);
           });
 
-          const result = await Auth.uploadLogo(
-            base64,
-            logoFile.type || 'image/png',
-            logoFile.name || 'logo.png'
-          );
-
-          if (!result.ok) {
-            throw new Error(result.message || '로고 업로드에 실패했습니다.');
-          }
-
-          console.log('로고 업로드 완료:', result.message);
+          config.logo = {
+            logoBase64: base64,
+            logoContentType: logoFile.type || 'image/png',
+            logoFilename: logoFile.name || 'logo.png'
+          };
         } catch (err) {
-          console.error('로고 업로드 실패:', err);
-          setError(err.message || err.data?.message || '로고 업로드 중 오류가 발생했습니다.');
+          console.error('로고 변환 실패:', err);
+          setError('로고 파일을 읽는 중 오류가 발생했습니다.');
           setUploadingLogo(false);
           setSubmitting(false);
           return;
@@ -200,14 +202,6 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth }) {
           setUploadingLogo(false);
         }
       }
-
-      const config = {
-        companyName: companyName.trim(),
-        companyLogoUrl: '/odata/v4/auth/GetLogo()',  // auth-service의 GetLogo 함수 사용
-        timezone: timezone,
-        language: language,
-        adminEmail: adminEmail.trim()
-      };
 
       const result = await Auth.submitTenantConfig(config);
 

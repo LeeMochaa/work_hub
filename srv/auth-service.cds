@@ -72,6 +72,12 @@ service AuthService @(
   action RequestAccessMail(email: String, name: String) returns AccessRequestResult;
 
   // 테넌트 초기 설정 제출
+  type LogoInput {
+    logoBase64     : LargeString;  // base64 인코딩된 이미지 데이터 (선택)
+    logoContentType: String(100);  // image/png, image/jpeg 등
+    logoFilename   : String(255);  // 원본 파일명
+  }
+
   type TenantConfigInput {
     companyName      : String(200);
     companyLogoUrl   : String(500);
@@ -79,6 +85,7 @@ service AuthService @(
     language         : String(10);
     adminEmail       : String(200);  // ADMIN의 권한 요청 수신 이메일
     btpCockpitUrl    : String(500);   // BTP Cockpit URL (선택사항, 없으면 자동 생성)
+    logo             : LogoInput?;    // 로고 업로드 (선택사항)
   }
 
   type TenantConfigResult {
