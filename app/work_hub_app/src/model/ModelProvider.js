@@ -215,7 +215,21 @@ export class ODataClient {
       body: payload ? JSON.stringify(payload) : undefined
     });
 
-    const json = await res.json().catch(() => ({}));
+    // 응답이 JSON인지 확인
+    const contentType = res.headers.get('content-type') || '';
+    let json;
+    
+    if (contentType.includes('application/json')) {
+      json = await res.json().catch(() => ({}));
+    } else {
+      // JSON이 아니면 텍스트로 읽어서 파싱 시도
+      const text = await res.text().catch(() => '{}');
+      try {
+        json = JSON.parse(text);
+      } catch (e) {
+        json = {};
+      }
+    }
 
     if (!res.ok) {
       const err = new Error(`[CALL ${path}] ${res.status} ${res.statusText}`);
@@ -317,7 +331,8 @@ export class AuthModel {
   }
 
   async getLogo() {
-    const res = await this.base.call('GetLogo', undefined, 'GET');
+    // CAP function 호출: GetLogo() 형식
+    const res = await this.base.call('GetLogo()', undefined, 'GET');
     if (!res.ok) {
       throw new Error(res.message || '로고를 가져올 수 없습니다.');
     }

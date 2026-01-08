@@ -44,15 +44,29 @@ export default function App() {
         console.log('[App] User:', JSON.stringify(data.user, null, 2));
         console.log('[App] isConfigured:', data.isConfigured);
         
-        // SYSADMIN은 항상 통과, 그 외는 ADMIN/LEADER/USER 중 하나가 있어야 함
-        const hasAccess =
-          flags.SYSADMIN || flags.ADMIN || flags.LEADER || flags.USER;
+        // 역할 체크: SYSADMIN, ADMIN, LEADER, USER 중 하나라도 있어야 접근 가능
+        // AUTHENTICATED만 있고 다른 역할이 없으면 AccessDenied로 보냄
+        const hasAnyRole = 
+          flags.SYSADMIN === true || 
+          flags.ADMIN === true || 
+          flags.LEADER === true || 
+          flags.USER === true;
 
-        console.log('[App] hasAccess:', hasAccess);
+        console.log('[App] hasAnyRole:', hasAnyRole);
+        console.log('[App] flags detail:', {
+          SYSADMIN: flags.SYSADMIN,
+          ADMIN: flags.ADMIN,
+          LEADER: flags.LEADER,
+          USER: flags.USER,
+          AUTHENTICATED: flags.AUTHENTICATED
+        });
 
-        if (!hasAccess) {
+        // 역할이 전혀 없으면 AccessDenied
+        if (!hasAnyRole) {
           setAccessDenied(true);
+          setShowSetupWizard(false);
         } else {
+          setAccessDenied(false);
           setAccessDenied(false);
           
           // SYSADMIN 권한 O = 바로 웰컴페이지 및 메인페이지
