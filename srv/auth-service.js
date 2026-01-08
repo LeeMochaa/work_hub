@@ -428,9 +428,11 @@ module.exports = cds.service.impl(async function () {
     }
 
     const p = req.data || {};
-    const logoBase64 = p.logoBase64 || '';
-    const logoContentType = p.logoContentType || 'image/png';
-    const logoFilename = p.logoFilename || 'logo.png';
+    // payload 구조: { logo: { logoBase64, logoContentType, logoFilename } }
+    const logoData = p.logo || {};
+    const logoBase64 = logoData.logoBase64 || p.logoBase64 || '';
+    const logoContentType = logoData.logoContentType || p.logoContentType || 'image/png';
+    const logoFilename = logoData.logoFilename || p.logoFilename || 'logo.png';
 
     if (!logoBase64) {
       return { ok: false, code: 'VALIDATION', message: '로고 데이터(logoBase64)가 필요합니다.' };
