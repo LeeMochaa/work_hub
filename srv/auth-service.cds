@@ -85,7 +85,7 @@ service AuthService @(
     language         : String(10);
     adminEmail       : String(200);  // ADMIN의 권한 요청 수신 이메일
     btpCockpitUrl    : String(500);   // BTP Cockpit URL (선택사항, 없으면 자동 생성)
-    logo             : LogoInput?;    // 로고 업로드 (선택사항)
+    logo             : LogoInput;     // 로고 업로드 (선택사항, JavaScript에서 null 체크)
   }
 
   type TenantConfigResult {
