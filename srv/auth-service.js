@@ -284,11 +284,6 @@ module.exports = cds.service.impl(async function () {
       return { ok: false, code: 'FORBIDDEN', message: 'Administrator 권한이 필요합니다.' };
     }
 
-    const TenantConfig = cds.entities['TenantConfig'];
-    if (!TenantConfig) {
-      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.' };
-    }
-
     const p = req.data || {};
     // payload 구조: { config: { companyName, timezone, language, adminEmail, companyLogoUrl, btpCockpitUrl?, logo? } }
     const config = p.config || p;
