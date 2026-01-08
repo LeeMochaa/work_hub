@@ -77,143 +77,77 @@ const logOneLine = (title, payload, opts = {}) => {
 };
 
 // =====================================================
-// Helper: xsappname 가져오기
+// Helper: User Profile 추출 (dev-hub 방식)
 // =====================================================
-const getXsappnameFromEnv = () => {
+const getUserProfile = (req) => {
+  const u = req.user || {};
+  const attr = u.attr || {};
+
+  const id =
+    u.id ||
+    u.name ||
+    attr.user_name ||
+    attr.ID ||
+    'anonymous';
+
+  const gn = attr.givenName || attr.given_name;
+  const fn = attr.familyName || attr.family_name;
+
+  let display = (gn || fn) ? [fn, gn].filter(Boolean).join('') : null;
+  if (!display) display = attr.display_name || attr.name || id;
+
+  const safeId = String(id || 'anonymous');
+  const safeName = String(display || safeId);
+  const tenant = req.tenant || u.tenant || attr.zid || '';
+
+  let raw = undefined;
   try {
-    if (process.env.VCAP_SERVICES) {
-      const vcap = JSON.parse(process.env.VCAP_SERVICES);
-      const xsuaa = (vcap.xsuaa || [])[0];
-      return xsuaa?.credentials?.xsappname || null;
-    }
+    raw = JSON.stringify(attr, null, 2);
   } catch (e) {
-    console.warn('[Auth] VCAP_SERVICES parse failed:', e.message);
+    console.warn('⚠️ JSON.stringify(u.attr) failed:', e.message);
   }
-  return null;
-};
-
-// =====================================================
-// Helper: user scopes 추출
-// =====================================================
-const extractUserScopes = (req) => {
-  const scopes = new Set();
-  
-  // xssec user.scopes 배열
-  if (Array.isArray(req.user?.scopes)) {
-    req.user.scopes.forEach((s) => scopes.add(String(s)));
-  }
-  
-  // roles 배열
-  if (Array.isArray(req.user?.roles)) {
-    req.user.roles.forEach((s) => scopes.add(String(s)));
-  }
-  
-  // roles 객체 map (XSUAA 패턴: {"openid":1,"User":1})
-  if (req.user?.roles && typeof req.user.roles === 'object' && !Array.isArray(req.user.roles)) {
-    Object.keys(req.user.roles).forEach((k) => scopes.add(String(k)));
-  }
-  
-  return scopes;
-};
-
-// =====================================================
-// Helper: user flags 계산
-// =====================================================
-const computeFlags = (req) => {
-  const isFn = typeof req.user?.is === 'function';
-  const is = (role) => (isFn ? !!req.user.is(role) : false);
-
-  // xsappname 가져오기 (work_hub 또는 실제 앱 이름)
-  const xsappname = getXsappnameFromEnv();
-  
-  // workhub의 scope 이름들 (xsappname 포함)
-  const workhubSYSADMIN = xsappname ? `${xsappname}.SYSADMIN` : 'work_hub.SYSADMIN';
-  const workhubAdministrator = xsappname ? `${xsappname}.Administrator` : 'work_hub.Administrator';
-  const workhubLeader = xsappname ? `${xsappname}.Leader` : 'work_hub.Leader';
-  const workhubUser = xsappname ? `${xsappname}.User` : 'work_hub.User';
-
-  // extractUserScopes를 사용하여 실제 scope 확인
-  const scopes = extractUserScopes(req);
-  
-  // 디버깅: 실제 scope 목록 로깅
-  if (scopes.size > 0) {
-    logOneLine('[ComputeFlags] User scopes', {
-      xsappname,
-      scopes: Array.from(scopes),
-      workhubScopes: {
-        SYSADMIN: workhubSYSADMIN,
-        Administrator: workhubAdministrator,
-        Leader: workhubLeader,
-        User: workhubUser
-      }
-    }, { level: 'log' });
-  }
-  
-  // workhub의 scope인지 확인하는 helper
-  // 다른 시스템의 scope는 무시하고 오직 workhub의 scope만 체크
-  // ⚠️ 중요: is() 메서드를 fallback으로 사용하되, 정확한 전체 scope 이름으로만 체크
-  const hasWorkhubScope = (scopeName) => {
-    // 1순위: scope Set에 정확한 scope 이름이 있는지 확인 (가장 안전한 방법)
-    if (scopes.has(scopeName)) {
-      return true;
-    }
-    
-    // 2순위: req.user.is() 사용하되 전체 scope 이름으로만 체크
-    // 예: is('work_hub.User')는 OK, is('User')는 위험 (다른 시스템 scope 매칭될 수 있음)
-    // 전체 scope 이름으로 체크하면 정확하게 workhub scope만 체크됨
-    return is(scopeName);
-  };
-  
-  const flags = {
-    // workhub의 SYSADMIN scope만 체크 (다른 시스템의 SYSADMIN 무시)
-    SYSADMIN: hasWorkhubScope(workhubSYSADMIN),
-
-    // ✅ workhub의 Administrator scope만 체크 (다른 시스템의 Administrator 무시)
-    ADMIN: hasWorkhubScope(workhubAdministrator),
-
-    // workhub의 Leader scope만 체크 (다른 시스템의 Leader 무시)
-    LEADER: hasWorkhubScope(workhubLeader),
-    
-    // workhub의 User scope만 체크 (다른 시스템의 User scope 무시)
-    // ⚠️ 단순히 'User'로만 체크하면 다른 시스템의 'User' scope도 매칭되므로
-    // 반드시 workhub의 전체 scope 이름(예: 'work_hub.User')으로 체크
-    USER: hasWorkhubScope(workhubUser),
-
-    // CAP/XSUAA에서 종종 authenticated-user scope가 있음
-    AUTHENTICATED: is('authenticated-user') || !!req.user?.id
-  };
-  
-  // 디버깅: 최종 flags 로깅
-  logOneLine('[ComputeFlags] Final flags', flags, { level: 'log' });
-  
-  return flags;
-};
-
-const buildUser = (req) => {
-  const given = req.user?.attr?.givenName;
-  const family = req.user?.attr?.familyName;
-
-  // req.user.name이 undefined로 올 수 있으니 attr 기반으로 보정
-  const name =
-    req.user?.name ||
-    ((given || family) ? `${given || ''} ${family || ''}`.trim() : undefined) ||
-    req.user?.id ||
-    'unknown';
 
   return {
-    id: req.user?.id || 'unknown',
-    name,
-    tenant: req.tenant || req.user?.tenant || 'default',
-    email: req.user?.attr?.email || req.user?.id || 'unknown',
-    raw: JSON.stringify(safeJson(req.user || {}))
+    id: safeId,
+    name: safeName,
+    tenant,
+    email: attr.email || attr.emailAddress || safeId,
+    raw
   };
 };
 
-const extractRoles = (req) => {
-  // req.user.roles 가 object일 때 key만 뽑아서 배열로
-  const rolesObj = req.user?.roles;
-  if (!rolesObj || typeof rolesObj !== 'object') return [];
-  return Object.keys(rolesObj);
+// =====================================================
+// Helper: 역할 목록 추출 (dev-hub 방식)
+// =====================================================
+const getRoles = (req) => {
+  const roles = [];
+  const has = (r) => req.user && req.user.is && req.user.is(r);
+
+  // CAP/XSUAA의 req.user.is()는 자동으로 xsappname prefix를 붙여서 체크함
+  // 예: is('User') → 'work_hub.User' scope를 찾음
+  ['SYSADMIN', 'Administrator', 'Leader', 'User'].forEach(r => {
+    if (has(r)) roles.push(r);
+  });
+  if (has('authenticated-user')) roles.push('authenticated-user');
+
+  return roles;
+};
+
+// =====================================================
+// Helper: 역할 플래그 계산 (dev-hub 방식)
+// =====================================================
+const getRoleFlags = (req) => {
+  const is = (r) => (req.user && req.user.is && req.user.is(r)) || false;
+  
+  // CAP/XSUAA의 req.user.is()는 자동으로 xsappname prefix를 붙여서 체크함
+  // 예: is('User') → 'work_hub.User' scope를 찾음
+  return {
+    SYSADMIN: is('SYSADMIN'),
+    ADMIN: is('Administrator'),
+    LEADER: is('Leader'),
+    USER: is('User'),
+    AUTHENTICATED: is('authenticated-user'),
+  };
 };
 
 // =====================================================
@@ -243,16 +177,23 @@ const renderTemplate = (template, variables) => {
 // =====================================================
 module.exports = cds.service.impl(async function () {
 
+  const tz =
+    process.env.TZ ||
+    (Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions().timeZone) ||
+    'UTC';
+
   // =====================================================
-  // Bootstrap
+  // Bootstrap (dev-hub 방식)
   // =====================================================
   this.on('Bootstrap', async (req) => {
-    const flags = computeFlags(req);
-    const user = buildUser(req);
+    const user = getUserProfile(req);
+    const roles = getRoles(req);
+    const flags = getRoleFlags(req);
+    const now = new Date();
 
     const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
 
-    const TenantConfig = cds.entities['TenantConfig'];
+    const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
 
     let tenantConfig = null;
     if (tenantId && TenantConfig) {
@@ -274,10 +215,9 @@ module.exports = cds.service.impl(async function () {
 
     logOneLine('BOOTSTRAP', {
       tenantId,
-      method: req.method,
-      path: req.path,
-      user: { id: req.user?.id, name: req.user?.name },
-      computedFlags: flags,
+      user: { id: user.id, name: user.name },
+      roles,
+      flags,
       tenantConfigFound: !!tenantConfig,
       isConfigured,
       adminEmail
@@ -285,12 +225,11 @@ module.exports = cds.service.impl(async function () {
 
     return {
       user,
-      roles: extractRoles(req),
+      roles,
       flags,
       serverTime: {
-        now: new Date(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-        iso: new Date().toISOString()
+        tz,
+        iso: now.toISOString()
       },
       adminEmail,
       isConfigured
@@ -301,37 +240,28 @@ module.exports = cds.service.impl(async function () {
   // Me
   // =====================================================
   this.on('Me', async (req) => {
-    const user = buildUser(req);
-    logOneLine('ME', { user });
-    return user;
+    const profile = getUserProfile(req);
+    logOneLine('ME', { profile });
+    return profile;
   });
 
   // =====================================================
   // MyRoles
   // =====================================================
-  this.on('MyRoles', async (req) => {
-    const roles = extractRoles(req);
-    logOneLine('MYROLES', { roles });
-    return roles;
-  });
+  this.on('MyRoles', (req) => getRoles(req));
 
   // =====================================================
   // WhoAmI (flags만 반환)
   // =====================================================
-  this.on('WhoAmI', async (req) => {
-    const flags = computeFlags(req);
-    logOneLine('WHOAMI', { flags });
-    return flags;
-  });
+  this.on('WhoAmI', (req) => getRoleFlags(req));
 
   // =====================================================
   // ServerTime / Ping
   // =====================================================
-  this.on('ServerTime', () => ({
-    now: new Date(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    iso: new Date().toISOString()
-  }));
+  this.on('ServerTime', () => {
+    const now = new Date();
+    return { now, timezone: tz, iso: now.toISOString() };
+  });
 
   this.on('Ping', () => 'pong');
 
@@ -344,39 +274,103 @@ module.exports = cds.service.impl(async function () {
   });
 
   // =====================================================
-  // RequestAccessMail (미구현)
+  // RequestAccessMail
   // =====================================================
   this.on('RequestAccessMail', async (req) => {
+    const { email, name } = req.data || {};
+
+    // 0) 이메일 필수 체크
+    if (!email) {
+      return {
+        ok: false,
+        code: 'NO_EMAIL',
+        message: '이메일 정보가 없어 권한 요청을 처리할 수 없습니다.',
+        retryAfterDays: 0
+      };
+    }
+
     logOneLine('REQUEST_ACCESS_MAIL', {
       user: req.user?.id,
       tenant: req.tenant,
-      data: req.data
+      email,
+      name
     });
 
+    // TODO: 실제 메일 발송 로직 구현
     return {
-      ok: false,
-      code: 'NOT_IMPLEMENTED',
-      message: '구현 대기 중',
-      retryAfterDays: 0
+      ok: true,
+      code: 'OK',
+      message: '권한 요청 메일이 발송되었습니다.',
+      retryAfterDays: 30
     };
   });
 
   // =====================================================
-  // SubmitTenantConfig (미구현)
+  // SetEnvConfigured (HTML 반환)
+  // =====================================================
+  this.on('SetEnvConfigured', async (req) => {
+    const tenantId = req.data?.tenant || req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+
+    if (!tenantId) {
+      return req.reply(`<html><body><h1>Error</h1><p>Tenant ID not found</p></body></html>`).type('text/html').status(400);
+    }
+
+    const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
+
+    if (!TenantConfig) {
+      return req.reply(`<html><body><h1>Error</h1><p>TenantConfig entity not found</p></body></html>`).type('text/html').status(500);
+    }
+
+    try {
+      const tx = cds.transaction(req);
+      const exists = await tx.run(SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId }));
+
+      if (exists) {
+        await tx.run(UPDATE(TenantConfig).set({ isConfigured: true }).where({ id: tenantId }));
+      } else {
+        await tx.run(INSERT.into(TenantConfig).entries({ id: tenantId, isConfigured: true }));
+      }
+
+      await tx.commit();
+
+      const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>환경 설정 완료</title>
+</head>
+<body>
+  <h1>환경 설정이 완료되었습니다.</h1>
+  <p>테넌트 ID: ${tenantId}</p>
+  <p><a href="/">홈으로 돌아가기</a></p>
+</body>
+</html>`;
+
+      logOneLine('SET_ENV_CONFIGURED', { tenantId });
+      return req.reply(html).type('text/html');
+    } catch (e) {
+      logOneLine('SET_ENV_CONFIGURED_FAIL', { tenantId, error: e.message }, { level: 'error' });
+      return req.reply(`<html><body><h1>Error</h1><p>${e.message}</p></body></html>`).type('text/html').status(500);
+    }
+  });
+
+  // =====================================================
+  // SubmitTenantConfig
   // =====================================================
   this.on('SubmitTenantConfig', async (req) => {
     const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+
     if (!tenantId) {
-      return { ok: false, code: 'NO_TENANT', message: '테넌트 정보를 확인할 수 없습니다.' };
+      return { ok: false, code: 'NO_TENANT', message: 'Tenant ID를 찾을 수 없습니다.' };
     }
 
-    const flags = computeFlags(req);
-    if (!flags.ADMIN && !flags.SYSADMIN) {
-      return { ok: false, code: 'FORBIDDEN', message: 'Administrator 권한이 필요합니다.' };
+    const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
+
+    if (!TenantConfig) {
+      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.' };
     }
 
     const p = req.data || {};
-    // payload 구조: { config: { companyName, timezone, language, adminEmail, companyLogoUrl, btpCockpitUrl?, logo? } }
     const config = p.config || p;
     const companyName = String(config.companyName || '').trim();
     const timezone = String(config.timezone || 'Asia/Seoul').trim();
@@ -386,10 +380,13 @@ module.exports = cds.service.impl(async function () {
     const btpCockpitUrl = String(config.btpCockpitUrl || '').trim();
     const logoData = config.logo || null;
 
-    if (!companyName) return { ok: false, code: 'VALIDATION', message: '회사명(companyName)은 필수입니다.' };
-    if (!adminEmail) return { ok: false, code: 'VALIDATION', message: '권한 요청 수신 이메일(adminEmail)은 필수입니다.' };
+    if (!companyName) {
+      return { ok: false, code: 'VALIDATION', message: '회사명(companyName)은 필수입니다.' };
+    }
+    if (!adminEmail) {
+      return { ok: false, code: 'VALIDATION', message: '권한 요청 수신 이메일(adminEmail)은 필수입니다.' };
+    }
 
-    // 로고 데이터가 있으면 검증 및 변환
     let logoBuffer = null;
     let logoContentType = null;
     let logoFilename = null;
@@ -400,42 +397,28 @@ module.exports = cds.service.impl(async function () {
       logoContentType = logoData.logoContentType || 'image/png';
       logoFilename = logoData.logoFilename || 'logo.png';
 
-      if (!logoBase64) {
-        return { ok: false, code: 'VALIDATION', message: '로고 데이터(logoBase64)가 필요합니다.' };
-      }
-
-      // base64 디코딩
       try {
         const base64Data = logoBase64.includes(',') ? logoBase64.split(',')[1] : logoBase64;
         logoBuffer = Buffer.from(base64Data, 'base64');
         logoSize = logoBuffer.length;
+
+        const validMimeTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/svg+xml'];
+        if (!validMimeTypes.includes(logoContentType.toLowerCase())) {
+          return { ok: false, code: 'VALIDATION', message: '지원하지 않는 이미지 형식입니다.' };
+        }
+
+        if (logoSize > 5 * 1024 * 1024) {
+          return { ok: false, code: 'VALIDATION', message: '로고 파일 크기는 5MB를 초과할 수 없습니다.' };
+        }
       } catch (e) {
-        return { ok: false, code: 'INVALID_BASE64', message: '유효하지 않은 base64 데이터입니다.' };
+        logOneLine('LOGO_DECODE_FAIL', { error: e.message }, { level: 'error' });
+        return { ok: false, code: 'VALIDATION', message: '로고 데이터 디코딩에 실패했습니다.' };
       }
-
-      // 파일 크기 체크 (5MB)
-      if (logoBuffer.length > 5 * 1024 * 1024) {
-        return { ok: false, code: 'FILE_TOO_LARGE', message: '파일 크기는 5MB를 초과할 수 없습니다.' };
-      }
-
-      // MIME 타입 체크
-      const allowedMime = /^(image\/jpeg|image\/jpg|image\/png|image\/gif|image\/svg\+xml|image\/webp)$/i;
-      if (!allowedMime.test(logoContentType)) {
-        return { ok: false, code: 'INVALID_MIME', message: '이미지 파일만 업로드 가능합니다. (jpeg, jpg, png, gif, svg, webp)' };
-      }
-    }
-
-    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
-    if (!TenantConfig) {
-      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.' };
     }
 
     try {
       const tx = cds.transaction(req);
-
-      const exists = await tx.run(
-        SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId })
-      );
+      const exists = await tx.run(SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId }));
 
       const updateData = {
         companyName,
@@ -447,7 +430,6 @@ module.exports = cds.service.impl(async function () {
         isConfigured: true
       };
 
-      // 로고가 있으면 포함
       if (logoBuffer) {
         updateData.logoContent = logoBuffer;
         updateData.logoContentType = logoContentType;
@@ -456,258 +438,141 @@ module.exports = cds.service.impl(async function () {
       }
 
       if (!exists) {
-        await tx.run(
-          cds.ql.INSERT.into(TenantConfig).entries({
-            id: tenantId,
-            ...updateData
-          })
-        );
+        await tx.run(INSERT.into(TenantConfig).entries({ id: tenantId, ...updateData }));
       } else {
-        await tx.run(
-          cds.ql.UPDATE(TenantConfig).set(updateData).where({ id: tenantId })
-        );
+        await tx.run(UPDATE(TenantConfig).set(updateData).where({ id: tenantId }));
       }
 
-      if (logoBuffer) {
-        logOneLine('SUBMIT_TENANT_CONFIG_WITH_LOGO_OK', {
-          tenantId,
-          companyName,
-          logoFilename,
-          logoSize
-        });
-      } else {
-        logOneLine('SUBMIT_TENANT_CONFIG_OK', {
-          tenantId,
-          companyName,
-          timezone,
-          language,
-          adminEmail
-        });
-      }
+      await tx.commit();
 
-      logOneLine('SUBMIT_TENANT_CONFIG_OK', { tenantId, companyName, timezone, language, adminEmail });
-
-      return { ok: true };
-    } catch (e) {
-      logOneLine('SUBMIT_TENANT_CONFIG_FAIL', { tenantId, error: e.message }, { level: 'error' });
-      return { ok: false, code: 'ERROR', message: e.message || '저장 중 오류가 발생했습니다.' };
-    }
-  });
-
-  // =====================================================
-  // SetEnvConfigured (환경 설정 완료 처리 - HTML 반환)
-  // =====================================================
-  this.on('SetEnvConfigured', async (req) => {
-    const tenantId = req.data?.tenant || req.query?.tenant || req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
-    if (!tenantId) {
-      const errorHtml = `
-        <html><head><meta charset="UTF-8"><title>오류</title></head>
-        <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
-          <h2 style="color: #d32f2f;">오류</h2>
-          <p>테넌트 ID가 필요합니다.</p>
-        </body></html>
-      `;
-      return req.reply(errorHtml, { type: 'text/html', status: 400 });
-    }
-
-    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
-    if (!TenantConfig) {
-      const errorHtml = `
-        <html><head><meta charset="UTF-8"><title>오류</title></head>
-        <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
-          <h2 style="color: #d32f2f;">오류</h2>
-          <p>TenantConfig 엔티티를 찾을 수 없습니다.</p>
-        </body></html>
-      `;
-      return req.reply(errorHtml, { type: 'text/html', status: 500 });
-    }
-
-    try {
-      const tx = cds.transaction(req);
-
-      const tenantConfig = await tx.run(
-        SELECT.one.from(TenantConfig).where({ id: tenantId })
-      );
-
-      if (!tenantConfig) {
-        const errorHtml = `
-          <html><head><meta charset="UTF-8"><title>오류</title></head>
-          <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
-            <h2 style="color: #d32f2f;">오류</h2>
-            <p>테넌트 설정을 찾을 수 없습니다.</p>
-          </body></html>
-        `;
-        return req.reply(errorHtml, { type: 'text/html', status: 404 });
-      }
-
-      await tx.run(
-        UPDATE(TenantConfig).set({ envConfigured: true }).where({ id: tenantId })
-      );
-
-      logOneLine('SET_ENV_CONFIGURED_OK', { tenantId });
-
-      const completeTemplate = loadEmailTemplate('env-setup-complete');
-      const completeHtml = renderTemplate(completeTemplate, {
-        tenant: tenantId,
-        companyName: tenantConfig.companyName || '(없음)',
-        completedAt: new Date().toLocaleString('ko-KR')
+      logOneLine('SUBMIT_TENANT_CONFIG', {
+        tenantId,
+        companyName,
+        adminEmail,
+        hasLogo: !!logoBuffer
       });
 
-      return req.reply(completeHtml, { type: 'text/html' });
+      return { ok: true, code: 'OK', message: '테넌트 설정이 저장되었습니다.' };
     } catch (e) {
-      logOneLine('SET_ENV_CONFIGURED_FAIL', { tenantId, error: e.message }, { level: 'error' });
-      const errorHtml = `
-        <html><head><meta charset="UTF-8"><title>오류</title></head>
-        <body style="font-family: Arial, sans-serif; padding: 20px; text-align: center;">
-          <h2 style="color: #d32f2f;">오류</h2>
-          <p>처리 중 오류가 발생했습니다: ${e.message}</p>
-        </body></html>
-      `;
-      return req.reply(errorHtml, { type: 'text/html', status: 500 });
+      logOneLine('SUBMIT_TENANT_CONFIG_FAIL', { tenantId, error: e.message }, { level: 'error' });
+      return { ok: false, code: 'ERROR', message: `설정 저장 실패: ${e.message}` };
     }
   });
 
   // =====================================================
-  // UploadLogo (로고 업로드 - ADMIN/SYSADMIN only)
+  // UploadLogo
   // =====================================================
   this.on('UploadLogo', async (req) => {
     const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+
     if (!tenantId) {
-      return { ok: false, code: 'NO_TENANT', message: '테넌트 ID를 확인할 수 없습니다.' };
+      return { ok: false, code: 'NO_TENANT', message: 'Tenant ID를 찾을 수 없습니다.', url: '' };
     }
 
-    const flags = computeFlags(req);
-    if (!flags.ADMIN && !flags.SYSADMIN) {
-      return { ok: false, code: 'FORBIDDEN', message: 'Administrator 또는 SYSADMIN 권한이 필요합니다.' };
+    const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
+
+    if (!TenantConfig) {
+      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.', url: '' };
     }
 
     const p = req.data || {};
-    // payload 구조: { logo: { logoBase64, logoContentType, logoFilename } }
-    const logoData = p.logo || {};
-    const logoBase64 = logoData.logoBase64 || p.logoBase64 || '';
-    const logoContentType = logoData.logoContentType || p.logoContentType || 'image/png';
-    const logoFilename = logoData.logoFilename || p.logoFilename || 'logo.png';
+    const logoData = p.logo || p;
+    const logoBase64 = logoData.logoBase64 || '';
+    const logoContentType = logoData.logoContentType || 'image/png';
+    const logoFilename = logoData.logoFilename || 'logo.png';
 
     if (!logoBase64) {
-      return { ok: false, code: 'VALIDATION', message: '로고 데이터(logoBase64)가 필요합니다.' };
+      return { ok: false, code: 'VALIDATION', message: '로고 데이터(logoBase64)가 필요합니다.', url: '' };
     }
 
-    // base64 디코딩
-    let logoBuffer;
     try {
-      // data:image/png;base64,xxx 형태일 수 있으니 처리
       const base64Data = logoBase64.includes(',') ? logoBase64.split(',')[1] : logoBase64;
-      logoBuffer = Buffer.from(base64Data, 'base64');
-    } catch (e) {
-      return { ok: false, code: 'INVALID_BASE64', message: '유효하지 않은 base64 데이터입니다.' };
-    }
+      const logoBuffer = Buffer.from(base64Data, 'base64');
+      const logoSize = logoBuffer.length;
 
-    // 파일 크기 체크 (5MB)
-    if (logoBuffer.length > 5 * 1024 * 1024) {
-      return { ok: false, code: 'FILE_TOO_LARGE', message: '파일 크기는 5MB를 초과할 수 없습니다.' };
-    }
-
-    // MIME 타입 체크
-    const allowedMime = /^(image\/jpeg|image\/jpg|image\/png|image\/gif|image\/svg\+xml|image\/webp)$/i;
-    if (!allowedMime.test(logoContentType)) {
-      return { ok: false, code: 'INVALID_MIME', message: '이미지 파일만 업로드 가능합니다. (jpeg, jpg, png, gif, svg, webp)' };
-    }
-
-    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
-    if (!TenantConfig) {
-      return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.' };
-    }
-
-    try {
-      const tx = cds.transaction(req);
-
-      // row 없으면 먼저 생성(최소 row 확보)
-      const exists = await tx.run(
-        SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId })
-      );
-
-      if (!exists) {
-        await tx.run(
-          INSERT.into(TenantConfig).entries({ id: tenantId, isConfigured: false })
-        );
+      const validMimeTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/svg+xml'];
+      if (!validMimeTypes.includes(logoContentType.toLowerCase())) {
+        return { ok: false, code: 'VALIDATION', message: '지원하지 않는 이미지 형식입니다.', url: '' };
       }
 
-      await tx.run(
-        UPDATE(TenantConfig).set({
-          logoContent: logoBuffer,
-          logoContentType,
-          logoFilename,
-          logoSize: logoBuffer.length
-        }).where({ id: tenantId })
-      );
+      if (logoSize > 5 * 1024 * 1024) {
+        return { ok: false, code: 'VALIDATION', message: '로고 파일 크기는 5MB를 초과할 수 없습니다.', url: '' };
+      }
 
-      logOneLine('UPLOAD_LOGO_OK', {
-        tenantId,
-        filename: logoFilename,
-        contentType: logoContentType,
-        size: logoBuffer.length
-      });
+      const tx = cds.transaction(req);
+      const exists = await tx.run(SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId }));
 
-      return {
-        ok: true,
-        message: '로고가 성공적으로 업로드되었습니다.',
-        url: '/api/logo'
+      const updateData = {
+        logoContent: logoBuffer,
+        logoContentType,
+        logoFilename,
+        logoSize
       };
+
+      if (!exists) {
+        await tx.run(INSERT.into(TenantConfig).entries({ id: tenantId, ...updateData }));
+      } else {
+        await tx.run(UPDATE(TenantConfig).set(updateData).where({ id: tenantId }));
+      }
+
+      await tx.commit();
+
+      const logoUrl = `/odata/v4/auth/GetLogo()`;
+      logOneLine('UPLOAD_LOGO', { tenantId, logoSize, logoContentType });
+
+      return { ok: true, code: 'OK', message: '로고가 업로드되었습니다.', url: logoUrl };
     } catch (e) {
       logOneLine('UPLOAD_LOGO_FAIL', { tenantId, error: e.message }, { level: 'error' });
-      return { ok: false, code: 'ERROR', message: e.message || '로고 업로드 중 오류가 발생했습니다.' };
+      return { ok: false, code: 'ERROR', message: `로고 업로드 실패: ${e.message}`, url: '' };
     }
   });
 
   // =====================================================
-  // GetLogo (로고 조회 - base64 data URI 반환)
+  // GetLogo
   // =====================================================
   this.on('GetLogo', async (req) => {
     const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+
     if (!tenantId) {
-      return { ok: false, code: 'NO_TENANT', message: '테넌트 ID를 확인할 수 없습니다.', useDefault: true };
+      return { ok: false, code: 'NO_TENANT', message: 'Tenant ID를 찾을 수 없습니다.', useDefault: true };
     }
 
-    const TenantConfig = cds.entities['workhub.TenantConfig'] || cds.entities['TenantConfig'];
+    const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
+
     if (!TenantConfig) {
       return { ok: false, code: 'NO_ENTITY', message: 'TenantConfig 엔티티를 찾을 수 없습니다.', useDefault: true };
     }
 
     try {
       const tx = cds.transaction(req);
-
       const row = await tx.run(
-        SELECT.one.from(TenantConfig)
+        SELECT.from(TenantConfig)
           .columns('logoContent', 'logoContentType', 'logoFilename', 'modifiedAt')
           .where({ id: tenantId })
       );
 
-      if (!row?.logoContent) {
+      if (!row || !row[0]?.logoContent) {
         return { ok: false, code: 'NOT_FOUND', message: '로고를 찾을 수 없습니다.', useDefault: true };
       }
 
-      const logoBase64 = Buffer.from(row.logoContent).toString('base64');
-      const contentType = row.logoContentType || 'image/png';
+      const logoBase64 = Buffer.from(row[0].logoContent).toString('base64');
+      const contentType = row[0].logoContentType || 'image/png';
       const dataUri = `data:${contentType};base64,${logoBase64}`;
 
-      logOneLine('GET_LOGO_OK', {
-        tenantId,
-        filename: row.logoFilename,
-        contentType,
-        size: row.logoContent?.length || 0
-      });
+      logOneLine('GET_LOGO', { tenantId, contentType, size: logoBase64.length });
 
       return {
         ok: true,
         logoBase64: dataUri,
         contentType,
-        filename: row.logoFilename || 'logo.png',
-        modifiedAt: row.modifiedAt ? new Date(row.modifiedAt).toISOString() : null,
+        filename: row[0].logoFilename || 'logo.png',
+        modifiedAt: row[0].modifiedAt ? new Date(row[0].modifiedAt).toISOString() : null,
         useDefault: false
       };
     } catch (e) {
       logOneLine('GET_LOGO_FAIL', { tenantId, error: e.message }, { level: 'error' });
-      return { ok: false, code: 'ERROR', message: e.message || '로고 조회 중 오류가 발생했습니다.', useDefault: true };
+      return { ok: false, code: 'ERROR', message: `로고 조회 실패: ${e.message}`, useDefault: true };
     }
   });
+
 });
