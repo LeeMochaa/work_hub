@@ -1,11 +1,15 @@
+import {
+  FlexBox
+} from '@ui5/webcomponents-react';
+
 export default function LogoDisplay({ style = {} }) {
   const logoUrl = "/assets/logo";
 
   return (
     <FlexBox
-      direction={FlexBoxDirection.Column}
-      justifyContent={FlexBoxJustifyContent.Center}
-      alignItems={FlexBoxAlignItems.Center}
+      direction="Column"
+      justifyContent="Center"
+      alignItems="Center"
       style={{ padding: "1rem", ...style }}
     >
       <img

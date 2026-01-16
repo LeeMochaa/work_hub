@@ -3,7 +3,14 @@
   "authenticationMethod": "route",
   "routes": [
     {
-      "source": "^(/work_hub_app)?/(auth|odata|api)(/.*)?$",
+      "source": "^(/work_hub_app)?/api/approve-access(/.*)?$",
+      "target": "/api$2",
+      "destination": "work_hub-srv",
+      "authenticationType": "none",
+      "csrfProtection": false
+    },
+    {
+      "source": "^(/work_hub_app)?/(auth|odata|api|assets)(/.*)?$",
       "target": "/$2$3",
       "destination": "work_hub-srv",
       "authenticationType": "xsuaa",

@@ -131,7 +131,8 @@ cds.on('served', () => {
    * ======================================================= */
   app.get('/api/approve-access', async (req, res) => {
     try {
-      const userId = req.query.userId;
+      // 쿼리 파라미터에서 userId와 tenant 추출 (대소문자 구분 없이)
+      const userId = req.query.userId || req.query.userid;
       const tenant = req.query.tenant;
       
       if (!userId) {

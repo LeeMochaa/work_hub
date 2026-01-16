@@ -397,18 +397,58 @@ module.exports = cds.service.impl(async function () {
       // BTP Cockpit 버튼 HTML 생성
       const btpCockpitButton = `<a href="${btpCockpitUrl}" target="_blank" style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">BTP Cockpit 열기</a>`;
 
-      // 권한 승인 버튼 URL 생성 (인증 없이 접근 가능한 /api/ 경로 사용)
-      const approveBaseUrl = process.env.APP_URL ||
-        (process.env.VCAP_APPLICATION
-          ? (() => {
-              const v = JSON.parse(process.env.VCAP_APPLICATION);
-              const uri = v.application_uris?.[0];
-              return uri ? `https://${uri}` : 'http://localhost:4004';
-            })()
-          : 'http://localhost:4004');
+      // 권한 승인 버튼 URL 생성 (AppRouter URL 사용)
+      // AppRouter URL을 사용해야 인증 없이 접근 가능
+      // 환경변수에서 AppRouter URL 가져오기 (우선순위 1)
+      let approveBaseUrl = process.env.APPROUTER_URL;
+      
+      // 환경변수가 없으면 서비스 URL에서 AppRouter URL 패턴 생성 시도
+      // 서비스 URL: ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
+      // AppRouter URL: consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com
+      if (!approveBaseUrl && process.env.VCAP_APPLICATION) {
+        try {
+          const v = JSON.parse(process.env.VCAP_APPLICATION);
+          // 서비스 URL에서 도메인 추출
+          const serviceUri = v.application_uris?.[0];
+          if (serviceUri) {
+            // 서비스 URL 패턴: {name}-srv.cfapps.{region}.hana.ondemand.com
+            // AppRouter URL 패턴: consumer-{tenant}-{name}-router.cfapps.{region}.hana.ondemand.com
+            // 또는: {tenant}-{name}-router.cfapps.{region}.hana.ondemand.com
+            
+            // 서비스 URL에서 도메인 부분 추출
+            const domainMatch = serviceUri.match(/\.cfapps\.(.+)$/);
+            if (domainMatch) {
+              const domain = domainMatch[1]; // us10-001.hana.ondemand.com
+              
+              // 테넌트 ID를 사용하여 AppRouter URL 생성
+              // 실제 패턴은 배포 환경에 따라 다를 수 있음
+              if (tenantId) {
+                // tenant ID의 일부를 사용하여 subdomain 생성
+                const tenantSubdomain = tenantId.substring(0, 8).replace(/-/g, ''); // 예: 1c5002c7
+                approveBaseUrl = `https://consumer-${tenantSubdomain}-ikd-saas-work-hub-router.cfapps.${domain}`;
+              } else {
+                // tenant ID가 없으면 기본 패턴 사용
+                approveBaseUrl = `https://consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.${domain}`;
+              }
+            }
+          }
+        } catch (e) {
+          logOneLine('APPROVE_URL_GEN_FAIL', { error: e.message }, { level: 'warn' });
+        }
+      }
+      
+      // 여전히 없으면 하드코딩된 기본값 사용 (운영 환경)
+      if (!approveBaseUrl) {
+        // 운영 환경 기본값
+        approveBaseUrl = process.env.NODE_ENV === 'production' 
+          ? 'https://consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com'
+          : 'http://localhost:4004';
+      }
       
       // /api/ 경로로 변경하여 인증 미들웨어를 우회
       const approveUrl = `${approveBaseUrl}/api/approve-access?userId=${encodeURIComponent(email)}&tenant=${encodeURIComponent(tenantId || '')}`;
+      
+      logOneLine('APPROVE_URL_GENERATED', { approveUrl, approveBaseUrl, tenantId });
       
       // 권한 승인 버튼 HTML 생성
       const approveButton = `<a href="${approveUrl}" style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; margin-top: 10px;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">✅ 권한 승인 완료</a>`;
