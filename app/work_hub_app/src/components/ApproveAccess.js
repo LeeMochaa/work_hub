@@ -69,7 +69,7 @@ export default function ApproveAccess() {
     };
 
     processApproval();
-  }, [auth, searchParams, navigate]);
+  }, [auth, navigate, location]);
 
   return (
     <div
