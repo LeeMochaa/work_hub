@@ -71,6 +71,15 @@ service AuthService @(
 
   action RequestAccessMail(email: String, name: String) returns AccessRequestResult;
 
+  // 역할 부여 확인 및 USER_STATUS 변경
+  type ApproveAccessResult {
+    ok      : Boolean;
+    code    : String(30);
+    message : String(255);
+  }
+
+  action ApproveAccess(userId: String) returns ApproveAccessResult;
+
   // 테넌트 초기 설정 제출
   type LogoInput {
     logoBase64     : LargeString;  // base64 인코딩된 이미지 데이터 (선택)

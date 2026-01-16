@@ -346,7 +346,83 @@ module.exports = cds.service.impl(async function () {
         logOneLine('REQUEST_ACCESS_MAIL_DEFAULT_ADMIN', { adminEmail }, { level: 'warn' });
       }
 
-      // 3) 메일 발송
+      // 3) 테넌트 설정에서 회사명과 BTP Cockpit URL 가져오기
+      let companyName = 'WorkHub';
+      let btpCockpitUrl = null;
+
+      if (tenantId) {
+        const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
+        if (TenantConfig) {
+          try {
+            const tx = cds.transaction(req);
+            const config = await tx.run(
+              SELECT.one.from(TenantConfig).columns('companyName', 'btpCockpitUrl').where({ id: tenantId })
+            );
+            if (config?.companyName) {
+              companyName = config.companyName;
+            }
+            if (config?.btpCockpitUrl) {
+              btpCockpitUrl = config.btpCockpitUrl;
+            }
+          } catch (e) {
+            logOneLine('REQUEST_ACCESS_MAIL_TENANTCONFIG_FAIL', { tenantId, error: e.message }, { level: 'warn' });
+          }
+        }
+      }
+
+      // BTP Cockpit URL이 없으면 기본값 생성
+      if (!btpCockpitUrl) {
+        const baseUrl = process.env.APP_URL ||
+          (process.env.VCAP_APPLICATION
+            ? (() => {
+                const v = JSON.parse(process.env.VCAP_APPLICATION);
+                const uri = v.application_uris?.[0];
+                return uri ? `https://${uri}` : 'http://localhost:4004';
+              })()
+            : 'http://localhost:4004');
+        btpCockpitUrl = `${baseUrl.replace('/work_hub_app', '').replace('/app', '')}/work_hub_app`;
+      }
+
+      // 4) HTML 템플릿 로드 및 렌더링
+      const template = loadEmailTemplate('access-request');
+      const requestDate = new Date().toLocaleString('ko-KR', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      // BTP Cockpit 버튼 HTML 생성
+      const btpCockpitButton = `<a href="${btpCockpitUrl}" target="_blank" style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">BTP Cockpit 열기</a>`;
+
+      // 권한 승인 버튼 URL 생성
+      const approveBaseUrl = process.env.APP_URL ||
+        (process.env.VCAP_APPLICATION
+          ? (() => {
+              const v = JSON.parse(process.env.VCAP_APPLICATION);
+              const uri = v.application_uris?.[0];
+              return uri ? `https://${uri}` : 'http://localhost:4004';
+            })()
+          : 'http://localhost:4004');
+      
+      const approveUrl = `${approveBaseUrl}/odata/v4/auth/ApproveAccess?userId=${encodeURIComponent(email)}&tenant=${encodeURIComponent(tenantId || '')}`;
+      
+      // 권한 승인 버튼 HTML 생성
+      const approveButton = `<a href="${approveUrl}" style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; margin-top: 10px;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">✅ 권한 승인 완료</a>`;
+
+      const htmlContent = renderTemplate(template, {
+        requestName: name || '알 수 없음',
+        requestEmail: email,
+        requestDate,
+        tenant: tenantId || '알 수 없음',
+        companyName,
+        btpCockpitButton,
+        approveButton
+      });
+
+      // 5) 메일 발송
       const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
@@ -359,14 +435,17 @@ module.exports = cds.service.impl(async function () {
         from: '"WorkHub 자동메일" <leemocha.aspn@gmail.com>',
         to: adminEmail,
         subject: '[WorkHub] 권한 요청',
+        html: htmlContent,
         text: `
 요청자 이름: ${name || '알 수 없음'}
 요청자 이메일: ${email}
 테넌트 ID: ${tenantId || '알 수 없음'}
+회사명: ${companyName}
 
 WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
 
-요청 시각: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
+요청 시각: ${requestDate}
+BTP Cockpit: ${btpCockpitUrl}
         `.trim()
       };
 
@@ -669,6 +748,96 @@ WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
     } catch (e) {
       logOneLine('GET_LOGO_FAIL', { tenantId, error: e.message }, { level: 'error' });
       return { ok: false, code: 'ERROR', message: `로고 조회 실패: ${e.message}`, useDefault: true };
+    }
+  });
+
+  // =====================================================
+  // ApproveAccess (역할 부여 확인 및 USER_STATUS 변경)
+  // =====================================================
+  this.on('ApproveAccess', async (req) => {
+    const { userId } = req.data || {};
+
+    if (!userId) {
+      return {
+        ok: false,
+        code: 'NO_USER_ID',
+        message: '사용자 ID가 필요합니다.'
+      };
+    }
+
+    logOneLine('APPROVE_ACCESS_START', {
+      userId,
+      approver: req.user?.id,
+      tenant: req.tenant
+    });
+
+    try {
+      const User = cds.entities['User'] || cds.entities['workhub.User'];
+      if (!User) {
+        return {
+          ok: false,
+          code: 'NO_ENTITY',
+          message: 'User 엔티티를 찾을 수 없습니다.'
+        };
+      }
+
+      const tx = cds.transaction(req);
+      
+      // 사용자 조회
+      const user = await tx.run(
+        SELECT.one.from(User).where({ id: userId })
+      );
+
+      if (!user) {
+        return {
+          ok: false,
+          code: 'USER_NOT_FOUND',
+          message: '사용자를 찾을 수 없습니다.'
+        };
+      }
+
+      // 현재 상태 확인
+      if (user.user_status !== 'REQUESTED') {
+        return {
+          ok: false,
+          code: 'INVALID_STATUS',
+          message: `현재 상태가 'REQUESTED'가 아닙니다. (현재: ${user.user_status})`
+        };
+      }
+
+      // 사용자의 역할 확인 (XSUAA에서 실제로 역할이 부여되었는지 확인)
+      // 여기서는 단순히 USER_STATUS만 변경하고, 실제 역할 확인은 BTP Cockpit에서 수동으로 수행되었다고 가정
+      
+      // USER_STATUS를 'ACTIVE'로 변경
+      await tx.run(
+        UPDATE(User)
+          .set({ user_status: 'ACTIVE' })
+          .where({ id: userId })
+      );
+
+      logOneLine('APPROVE_ACCESS_SUCCESS', {
+        userId,
+        oldStatus: 'REQUESTED',
+        newStatus: 'ACTIVE',
+        approver: req.user?.id
+      });
+
+      return {
+        ok: true,
+        code: 'OK',
+        message: '사용자 권한이 승인되었습니다.'
+      };
+    } catch (e) {
+      logOneLine('APPROVE_ACCESS_FAIL', {
+        userId,
+        error: e.message
+      }, { level: 'error' });
+
+      return {
+        ok: false,
+        code: 'ERROR',
+        message: `권한 승인 처리 중 오류가 발생했습니다: ${e.message}`
+      };
     }
   });
 
