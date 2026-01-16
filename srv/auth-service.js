@@ -346,9 +346,10 @@ module.exports = cds.service.impl(async function () {
         logOneLine('REQUEST_ACCESS_MAIL_DEFAULT_ADMIN', { adminEmail }, { level: 'warn' });
       }
 
-      // 3) 테넌트 설정에서 회사명과 BTP Cockpit URL 가져오기
+      // 3) 테넌트 설정에서 회사명, BTP Cockpit URL, AppRouter URL 가져오기
       let companyName = 'WorkHub';
       let btpCockpitUrl = null;
+      let savedAppRouterUrl = null;
 
       if (tenantId) {
         const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
@@ -356,13 +357,25 @@ module.exports = cds.service.impl(async function () {
           try {
             const tx = cds.transaction(req);
             const config = await tx.run(
-              SELECT.one.from(TenantConfig).columns('companyName', 'btpCockpitUrl').where({ id: tenantId })
+              SELECT.one.from(TenantConfig).columns('companyName', 'btpCockpitUrl', 'additionalConfig').where({ id: tenantId })
             );
             if (config?.companyName) {
               companyName = config.companyName;
             }
             if (config?.btpCockpitUrl) {
               btpCockpitUrl = config.btpCockpitUrl;
+            }
+            
+            // additionalConfig에서 AppRouter URL 추출
+            if (config?.additionalConfig) {
+              try {
+                const additionalConfigObj = JSON.parse(config.additionalConfig);
+                if (additionalConfigObj?.appRouterUrl) {
+                  savedAppRouterUrl = additionalConfigObj.appRouterUrl;
+                }
+              } catch (e) {
+                // JSON 파싱 실패 시 무시
+              }
             }
           } catch (e) {
             logOneLine('REQUEST_ACCESS_MAIL_TENANTCONFIG_FAIL', { tenantId, error: e.message }, { level: 'warn' });
@@ -401,25 +414,39 @@ module.exports = cds.service.impl(async function () {
       // AppRouter URL을 사용해야 인증 없이 접근 가능
       // Consumer 계정에서 실행 중일 때는 Consumer AppRouter URL을 사용해야 함
       // 
-      // 호스트 이름 패턴 분석:
-      // - Consumer 계정 URL: {tenant-subdomain}-{org}-{space}-{router-app-name}
-      //   예: consumer-dine-7myl0p0d-ikd-saas-work-hub-router
-      // - Provider 기본 URL: {org}-{space}-{router-app-name}
-      //   예: ikd-saas-work-hub-router
-      //
-      // 가장 확실한 방법: 요청의 Host 헤더에서 추출 (Consumer 계정 요청이면 Consumer URL)
+      // 우선순위:
+      // 1. TenantConfig.additionalConfig에 저장된 AppRouter URL (가장 확실)
+      // 2. 환경변수 APPROUTER_URL
+      // 3. 요청의 Host/Referer 헤더에서 추출
+      // 4. VCAP_APPLICATION에서 추출 (fallback)
       
-      // 1) 환경변수에서 AppRouter URL 가져오기 (최우선)
-      let approveBaseUrl = process.env.APPROUTER_URL;
+      // 1) TenantConfig.additionalConfig에서 저장된 AppRouter URL 사용 (최우선)
+      let approveBaseUrl = savedAppRouterUrl;
       
-      // 2) 환경변수가 없으면 요청의 Host 헤더에서 추출 (가장 확실한 방법)
+      // 2) 없으면 환경변수에서 AppRouter URL 가져오기
+      if (!approveBaseUrl) {
+        approveBaseUrl = process.env.APPROUTER_URL;
+      }
+      
+      // 3) 저장된 URL도 없고 환경변수도 없으면 요청의 Host 헤더 또는 Referer 헤더에서 추출
       // Consumer 계정에서 이메일 요청이 들어오면 Host 헤더가 Consumer AppRouter URL
       if (!approveBaseUrl && req) {
-        const hostHeader = req.headers['host'] || req.headers['x-forwarded-host'];
+        // Host 헤더 확인
+        let hostHeader = req.headers['host'] || req.headers['x-forwarded-host'];
+        
+        // Host 헤더가 없으면 Referer 헤더 확인
+        // Referer는 이전 페이지 URL을 포함하므로 Consumer AppRouter URL을 포함할 수 있음
+        if (!hostHeader && req.headers['referer']) {
+          try {
+            const refererUrl = new URL(req.headers['referer']);
+            hostHeader = refererUrl.hostname;
+          } catch (e) {
+            // Referer 파싱 실패 시 무시
+          }
+        }
         
         if (hostHeader) {
-          // Host 헤더에서 프로토콜 추출 (보통 https)
-          // 예: consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com
+          // Host 헤더에서 호스트명 추출
           const hostname = hostHeader.split(':')[0]; // 포트 제거
           
           // AppRouter 호스트인지 확인 (이미 AppRouter에서 온 요청이면 그대로 사용)
@@ -438,53 +465,90 @@ module.exports = cds.service.impl(async function () {
             hostname,
             routerHost,
             approveBaseUrl,
-            tenantId 
+            tenantId,
+            referer: req.headers['referer']
           });
         }
       }
       
-      // 3) Host 헤더도 없으면 VCAP_APPLICATION에서 AppRouter 호스트 이름 추출
+      // 3) Host 헤더에도 Consumer 패턴이 없으면 BTP Cockpit URL에서 subaccount ID 추출 후 패턴 구성 시도
+      // BTP Cockpit URL: https://emea.cockpit.btp.cloud.sap/cockpit/#/globalaccount/{globalaccountId}/subaccount/{subaccountId}/service-instances
+      // subaccount ID는 tenant ID와 같을 수 있지만, Consumer 서브도메인을 직접 추론하기는 어려움
+      // 따라서 TenantConfig에 저장된 btpCockpitUrl에서 subaccount ID를 추출하고,
+      // Provider URL 패턴에 tenant subdomain을 추가하는 방식으로 시도
+      if (!approveBaseUrl && btpCockpitUrl && tenantId) {
+        try {
+          // BTP Cockpit URL에서 subaccount ID 추출
+          const subaccountMatch = btpCockpitUrl.match(/\/subaccount\/([^\/]+)/);
+          const subaccountId = subaccountMatch ? subaccountMatch[1] : tenantId;
+          
+          // VCAP_APPLICATION에서 도메인과 Provider URL 패턴 추출
+          if (process.env.VCAP_APPLICATION) {
+            const v = JSON.parse(process.env.VCAP_APPLICATION);
+            const applicationUris = v.application_uris || [];
+            
+            if (applicationUris.length > 0) {
+              const providerServiceUri = applicationUris[0];
+              const domainMatch = providerServiceUri.match(/\.cfapps\.(.+)$/);
+              
+              if (domainMatch) {
+                const domain = domainMatch[1]; // us10-001.hana.ondemand.com
+                
+                // Provider 서비스 호스트: ikd-saas-work-hub-srv
+                const providerServiceHost = providerServiceUri.replace(/\.cfapps\..+$/, '');
+                
+                // Provider AppRouter 호스트: ikd-saas-work-hub-router
+                const providerRouterHost = providerServiceHost.replace(/-srv$/, '-router');
+                
+                // Consumer 서브도메인을 추론할 수 없으므로,
+                // 환경변수나 다른 방법을 통해 Consumer AppRouter URL을 구성해야 함
+                // 하지만 패턴이 명확하지 않으므로, 일단 Provider URL 사용하고 로그 출력
+                
+                logOneLine('APPROVE_URL_CONSUMER_PATTERN_NOT_FOUND', {
+                  subaccountId,
+                  tenantId,
+                  providerServiceUri,
+                  providerRouterHost,
+                  btpCockpitUrl,
+                  note: 'Consumer 서브도메인을 추론할 수 없음. Provider URL 사용 또는 환경변수 APPROUTER_URL 설정 필요'
+                }, { level: 'warn' });
+                
+                // 일단 Provider URL 사용 (더 나은 방법이 필요함)
+                approveBaseUrl = `https://${providerRouterHost}.cfapps.${domain}`;
+              }
+            }
+          }
+        } catch (e) {
+          logOneLine('APPROVE_URL_FROM_COCKPIT_FAIL', { error: e.message }, { level: 'warn' });
+        }
+      }
+      
+      // 4) 여전히 없으면 VCAP_APPLICATION에서 Provider AppRouter URL 추출 (fallback)
       if (!approveBaseUrl && process.env.VCAP_APPLICATION) {
         try {
           const v = JSON.parse(process.env.VCAP_APPLICATION);
-          const serviceUri = v.application_uris?.[0];
+          const applicationUris = v.application_uris || [];
           
-          if (serviceUri) {
-            // 서비스 URI에서 도메인 추출
+          if (applicationUris.length > 0) {
+            const serviceUri = applicationUris[0];
             const domainMatch = serviceUri.match(/\.cfapps\.(.+)$/);
+            
             if (domainMatch) {
-              const domain = domainMatch[1]; // us10-001.hana.ondemand.com
-              
-              // 서비스 URI에서 호스트 이름 부분 추출
+              const domain = domainMatch[1];
               const serviceHost = serviceUri.replace(/\.cfapps\..+$/, '');
-              
-              // AppRouter 호스트 이름 패턴 추출
-              // 서비스 호스트의 마지막 '-srv'를 '-router'로 치환
               let routerHost = serviceHost.replace(/-srv$/, '-router');
               
-              // 패턴 매칭 실패 시
               if (routerHost === serviceHost) {
                 routerHost = serviceHost.replace(/[^-]+$/, 'router');
-                
-                if (routerHost === serviceHost || !routerHost) {
-                  const hostParts = serviceHost.split('-');
-                  if (hostParts.length >= 2) {
-                    routerHost = hostParts.slice(0, -1).join('-') + '-work-hub-router';
-                  } else {
-                    routerHost = 'work-hub-router';
-                  }
-                }
               }
               
               approveBaseUrl = `https://${routerHost}.cfapps.${domain}`;
               
-              logOneLine('APPROUTER_URL_EXTRACTED', { 
-                serviceUri, 
-                serviceHost,
-                domain, 
-                routerHost, 
+              logOneLine('APPROUTER_URL_FROM_VCAP', {
+                serviceUri,
+                routerHost,
                 approveBaseUrl,
-                tenantId 
+                tenantId
               });
             }
           }
@@ -688,9 +752,58 @@ BTP Cockpit: ${btpCockpitUrl}
       }
     }
 
+    // AppRouter URL 추출 (요청의 Host 헤더에서)
+    // Consumer 계정에서 실행 중이면 Host 헤더가 Consumer AppRouter URL
+    let appRouterUrl = null;
+    if (req) {
+      const hostHeader = req.headers['host'] || req.headers['x-forwarded-host'];
+      
+      if (hostHeader) {
+        const hostname = hostHeader.split(':')[0];
+        let routerHost = hostname;
+        
+        // 서비스 호스트 패턴인지 확인 (-srv로 끝나는 경우)
+        if (hostname.endsWith('-srv') || hostname.match(/-srv\./)) {
+          routerHost = hostname.replace(/-srv(\.|$)/, '-router$1');
+        }
+        
+        appRouterUrl = `https://${routerHost}`;
+      } else if (req.headers['referer']) {
+        // Host 헤더가 없으면 Referer 헤더에서 추출 시도
+        try {
+          const refererUrl = new URL(req.headers['referer']);
+          const refererHost = refererUrl.hostname;
+          let routerHost = refererHost;
+          
+          if (refererHost.endsWith('-srv') || refererHost.match(/-srv\./)) {
+            routerHost = refererHost.replace(/-srv(\.|$)/, '-router$1');
+          }
+          
+          appRouterUrl = `https://${routerHost}`;
+        } catch (e) {
+          // Referer 파싱 실패 시 무시
+        }
+      }
+    }
+
     try {
       const tx = cds.transaction(req);
-      const exists = await tx.run(SELECT.one.from(TenantConfig).columns('id').where({ id: tenantId }));
+      const exists = await tx.run(SELECT.one.from(TenantConfig).columns('id', 'additionalConfig').where({ id: tenantId }));
+
+      // additionalConfig 파싱 (기존 값 유지)
+      let additionalConfigObj = {};
+      if (exists?.additionalConfig) {
+        try {
+          additionalConfigObj = JSON.parse(exists.additionalConfig);
+        } catch (e) {
+          // 파싱 실패 시 빈 객체 사용
+        }
+      }
+      
+      // AppRouter URL을 additionalConfig에 저장
+      if (appRouterUrl) {
+        additionalConfigObj.appRouterUrl = appRouterUrl;
+      }
 
       const updateData = {
         companyName,
@@ -699,6 +812,7 @@ BTP Cockpit: ${btpCockpitUrl}
         language,
         adminEmail,
         btpCockpitUrl: btpCockpitUrl || null,
+        additionalConfig: JSON.stringify(additionalConfigObj),
         isConfigured: true
       };
 
