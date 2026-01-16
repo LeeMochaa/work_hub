@@ -2,6 +2,7 @@ const cds = require('@sap/cds');
 const { SELECT, UPDATE, INSERT } = cds.ql;
 const path = require('path');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
 
 // =====================================================
 // Helper: Safe JSON stringify (순환 참조 방지)
@@ -289,20 +290,116 @@ module.exports = cds.service.impl(async function () {
       };
     }
 
-    logOneLine('REQUEST_ACCESS_MAIL', {
+    logOneLine('REQUEST_ACCESS_MAIL_START', {
       user: req.user?.id,
       tenant: req.tenant,
       email,
       name
     });
 
-    // TODO: 실제 메일 발송 로직 구현
-    return {
-      ok: true,
-      code: 'OK',
-      message: '권한 요청 메일이 발송되었습니다.',
-      retryAfterDays: 30
-    };
+    try {
+      // 1) UserService를 통해 유저 업서트 + 쿨다운 체크
+      const userSrv = await cds.connect.to('UserService');
+      const cooldown = await userSrv.checkAccessRequestCooldown(req, {
+        cooldownDays: 30
+      });
+
+      // ⏰ 아직 30일 쿨다운 중인 경우 → 그대로 전달해서 200 + { ok:false } 구조로 반환
+      if (!cooldown.ok) {
+        logOneLine('REQUEST_ACCESS_MAIL_COOLDOWN', {
+          user: req.user?.id,
+          code: cooldown.code,
+          retryAfterDays: cooldown.retryAfterDays
+        });
+        return {
+          ok: false,
+          code: cooldown.code,
+          message: cooldown.message,
+          retryAfterDays: cooldown.retryAfterDays || 0
+        };
+      }
+
+      // 2) 테넌트 설정에서 관리자 이메일 가져오기
+      const tenantId = req.tenant || req.user?.tenant || req.user?.attr?.zid || null;
+      let adminEmail = null;
+
+      if (tenantId) {
+        const TenantConfig = cds.entities['TenantConfig'] || cds.entities['workhub.TenantConfig'];
+        if (TenantConfig) {
+          try {
+            const tx = cds.transaction(req);
+            const config = await tx.run(
+              SELECT.one.from(TenantConfig).columns('adminEmail').where({ id: tenantId })
+            );
+            if (config?.adminEmail) {
+              adminEmail = config.adminEmail;
+            }
+          } catch (e) {
+            logOneLine('REQUEST_ACCESS_MAIL_ADMIN_EMAIL_FAIL', { tenantId, error: e.message }, { level: 'warn' });
+          }
+        }
+      }
+
+      // 관리자 이메일이 없으면 기본값 사용
+      if (!adminEmail) {
+        adminEmail = process.env.ADMIN_EMAIL || 'leemocha@aspnc.com';
+        logOneLine('REQUEST_ACCESS_MAIL_DEFAULT_ADMIN', { adminEmail }, { level: 'warn' });
+      }
+
+      // 3) 메일 발송
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: 'leemocha.aspn@gmail.com',
+          pass: process.env.GMAIL_APP_PASS
+        }
+      });
+
+      const mailOptions = {
+        from: '"WorkHub 자동메일" <leemocha.aspn@gmail.com>',
+        to: adminEmail,
+        subject: '[WorkHub] 권한 요청',
+        text: `
+요청자 이름: ${name || '알 수 없음'}
+요청자 이메일: ${email}
+테넌트 ID: ${tenantId || '알 수 없음'}
+
+WorkHub 애플리케이션에 대한 접근 권한을 신청합니다.
+
+요청 시각: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
+        `.trim()
+      };
+
+      await transporter.sendMail(mailOptions);
+
+      logOneLine('REQUEST_ACCESS_MAIL_SENT', {
+        user: req.user?.id,
+        tenant: tenantId,
+        from: email,
+        to: adminEmail,
+        name
+      });
+
+      return {
+        ok: true,
+        code: 'OK',
+        message: '권한 요청 메일이 발송되었습니다.',
+        retryAfterDays: 30
+      };
+    } catch (e) {
+      logOneLine('REQUEST_ACCESS_MAIL_FAIL', {
+        user: req.user?.id,
+        tenant: req.tenant,
+        error: e.message
+      }, { level: 'error' });
+
+      return {
+        ok: false,
+        code: 'ERROR',
+        message: `권한 요청 처리 중 오류가 발생했습니다: ${e.message}`,
+        retryAfterDays: 0
+      };
+    }
   });
 
   // =====================================================

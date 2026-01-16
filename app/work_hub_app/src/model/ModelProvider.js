@@ -73,28 +73,35 @@ export class ODataClient {
         ...(init.headers || {})
       };
 
+      // CSRF 토큰 확보 시도
+      let csrfToken = null;
       try {
-        await this.ensureCsrf();
-        if (this.csrfToken) {
-          init.headers['x-csrf-token'] = this.csrfToken;
-        }
+        csrfToken = await this.ensureCsrf();
       } catch (e) {
-        console.warn('[ODataClient] CSRF 토큰 확보 실패, 토큰 없이 진행합니다:', e?.message);
+        console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
+        // CSRF 토큰이 없어도 일단 요청은 시도 (서버에서 403 반환하면 재시도)
+      }
+
+      if (csrfToken) {
+        init.headers['x-csrf-token'] = csrfToken;
       }
 
       const res = await fetch(url, init);
 
+      // 403 Forbidden이면 CSRF 토큰 문제일 수 있으므로 재시도
       if (res.status === 403) {
         try {
+          // CSRF 토큰 갱신 시도
           await this.refreshCsrf();
           if (this.csrfToken) {
-            const retry = await fetch(url, {
+            const retryInit = {
               ...init,
               headers: {
                 ...init.headers,
                 'x-csrf-token': this.csrfToken
               }
-            });
+            };
+            const retry = await fetch(url, retryInit);
             return retry;
           }
         } catch (e) {
