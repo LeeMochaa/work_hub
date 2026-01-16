@@ -399,26 +399,51 @@ module.exports = cds.service.impl(async function () {
 
       // 권한 승인 버튼 URL 생성 (AppRouter URL 사용)
       // AppRouter URL을 사용해야 인증 없이 접근 가능
-      // MTA 배포 시 생성되는 AppRouter 호스트 이름을 동적으로 추출
+      // Consumer 계정에서 실행 중일 때는 Consumer AppRouter URL을 사용해야 함
       // 
       // 호스트 이름 패턴 분석:
       // - Consumer 계정 URL: {tenant-subdomain}-{org}-{space}-{router-app-name}
       //   예: consumer-dine-7myl0p0d-ikd-saas-work-hub-router
-      //   (하위계정명: Consumer-Dine, 하위 도메인: consumer-dine-7myl0p0d)
-      // - Consumer 계정 서비스 URL: {tenant-subdomain}-{org}-{space}-{service-app-name}
-      //   예: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv
       // - Provider 기본 URL: {org}-{space}-{router-app-name}
       //   예: ikd-saas-work-hub-router
       //
-      // 권한 승인은 현재 실행 중인 계정(Consumer 또는 Provider)의 AppRouter URL을 사용해야 함
-      // 서비스 URI에서 '-srv'를 '-router'로 치환하여 AppRouter URL 생성
-      // 이렇게 하면 Consumer 계정에서는 Consumer URL, Provider 계정에서는 Provider URL이 생성됨
+      // 가장 확실한 방법: 요청의 Host 헤더에서 추출 (Consumer 계정 요청이면 Consumer URL)
       
       // 1) 환경변수에서 AppRouter URL 가져오기 (최우선)
       let approveBaseUrl = process.env.APPROUTER_URL;
       
-      // 2) 환경변수가 없으면 VCAP_APPLICATION에서 AppRouter 호스트 이름 추출
-      // 서비스 URI가 Consumer 계정이면 Consumer URL, Provider 계정이면 Provider URL이 자동 생성됨
+      // 2) 환경변수가 없으면 요청의 Host 헤더에서 추출 (가장 확실한 방법)
+      // Consumer 계정에서 이메일 요청이 들어오면 Host 헤더가 Consumer AppRouter URL
+      if (!approveBaseUrl && req) {
+        const hostHeader = req.headers['host'] || req.headers['x-forwarded-host'];
+        
+        if (hostHeader) {
+          // Host 헤더에서 프로토콜 추출 (보통 https)
+          // 예: consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com
+          const hostname = hostHeader.split(':')[0]; // 포트 제거
+          
+          // AppRouter 호스트인지 확인 (이미 AppRouter에서 온 요청이면 그대로 사용)
+          // 서비스로 직접 온 요청이면 '-srv'를 '-router'로 치환
+          let routerHost = hostname;
+          
+          // 서비스 호스트 패턴인지 확인 (-srv로 끝나는 경우)
+          if (hostname.endsWith('-srv') || hostname.match(/-srv\./)) {
+            routerHost = hostname.replace(/-srv(\.|$)/, '-router$1');
+          }
+          
+          approveBaseUrl = `https://${routerHost}`;
+          
+          logOneLine('APPROUTER_URL_FROM_HOST', { 
+            hostHeader,
+            hostname,
+            routerHost,
+            approveBaseUrl,
+            tenantId 
+          });
+        }
+      }
+      
+      // 3) Host 헤더도 없으면 VCAP_APPLICATION에서 AppRouter 호스트 이름 추출
       if (!approveBaseUrl && process.env.VCAP_APPLICATION) {
         try {
           const v = JSON.parse(process.env.VCAP_APPLICATION);
@@ -426,35 +451,24 @@ module.exports = cds.service.impl(async function () {
           
           if (serviceUri) {
             // 서비스 URI에서 도메인 추출
-            // Consumer 계정: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
-            // Provider 계정: ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
             const domainMatch = serviceUri.match(/\.cfapps\.(.+)$/);
             if (domainMatch) {
               const domain = domainMatch[1]; // us10-001.hana.ondemand.com
               
               // 서비스 URI에서 호스트 이름 부분 추출
-              // Consumer 계정: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv
-              // Provider 계정: ikd-saas-work-hub-srv
               const serviceHost = serviceUri.replace(/\.cfapps\..+$/, '');
               
               // AppRouter 호스트 이름 패턴 추출
               // 서비스 호스트의 마지막 '-srv'를 '-router'로 치환
-              // Consumer: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv -> consumer-dine-7myl0p0d-ikd-saas-work-hub-router
-              // Provider: ikd-saas-work-hub-srv -> ikd-saas-work-hub-router
               let routerHost = serviceHost.replace(/-srv$/, '-router');
               
-              // 패턴 매칭 실패 시 (예: 다른 이름 패턴)
+              // 패턴 매칭 실패 시
               if (routerHost === serviceHost) {
-                // 서비스 호스트의 마지막 단어를 'router'로 치환 시도
                 routerHost = serviceHost.replace(/[^-]+$/, 'router');
                 
-                // 여전히 매칭 실패 시 MTA 모듈 이름 사용 (work_hub-router -> work-hub-router)
                 if (routerHost === serviceHost || !routerHost) {
-                  // {tenant-subdomain}-{org}-{space}-work-hub-router 형식으로 생성
-                  // (서비스 호스트가 이미 테넌트 서브도메인 포함 여부와 관계없이 동작)
                   const hostParts = serviceHost.split('-');
                   if (hostParts.length >= 2) {
-                    // 마지막 'srv' 부분만 'router'로 치환
                     routerHost = hostParts.slice(0, -1).join('-') + '-work-hub-router';
                   } else {
                     routerHost = 'work-hub-router';
@@ -462,7 +476,6 @@ module.exports = cds.service.impl(async function () {
                 }
               }
               
-              // 완전한 AppRouter URL 구성
               approveBaseUrl = `https://${routerHost}.cfapps.${domain}`;
               
               logOneLine('APPROUTER_URL_EXTRACTED', { 
@@ -480,7 +493,7 @@ module.exports = cds.service.impl(async function () {
         }
       }
       
-      // 3) 여전히 없으면 로컬 개발 환경 기본값
+      // 4) 여전히 없으면 로컬 개발 환경 기본값
       if (!approveBaseUrl) {
         approveBaseUrl = 'http://localhost:4004';
         logOneLine('APPROUTER_URL_DEFAULT', { approveBaseUrl });
@@ -813,7 +826,41 @@ BTP Cockpit: ${btpCockpitUrl}
         return { ok: false, code: 'NOT_FOUND', message: '로고를 찾을 수 없습니다.', useDefault: true };
       }
 
-      const logoBase64 = Buffer.from(row[0].logoContent).toString('base64');
+      // logoContent가 Buffer, Readable 스트림, 또는 다른 형식일 수 있으므로 처리
+      let logoBuffer;
+      const logoContent = row[0].logoContent;
+      
+      if (Buffer.isBuffer(logoContent)) {
+        // 이미 Buffer인 경우
+        logoBuffer = logoContent;
+      } else if (typeof logoContent === 'string') {
+        // 문자열인 경우 (base64 문자열일 수 있음)
+        logoBuffer = Buffer.from(logoContent, 'base64');
+      } else if (logoContent && typeof logoContent.pipe === 'function') {
+        // Readable 스트림인 경우 Buffer로 변환
+        const chunks = [];
+        for await (const chunk of logoContent) {
+          chunks.push(chunk);
+        }
+        logoBuffer = Buffer.concat(chunks);
+      } else if (logoContent instanceof Uint8Array || Array.isArray(logoContent)) {
+        // Uint8Array 또는 배열인 경우
+        logoBuffer = Buffer.from(logoContent);
+      } else {
+        // 기타 경우: toString()으로 문자열로 변환 후 Buffer 생성 시도
+        try {
+          logoBuffer = Buffer.from(String(logoContent), 'base64');
+        } catch (e) {
+          logOneLine('GET_LOGO_BUFFER_CONVERSION_FAIL', { 
+            tenantId, 
+            logoContentType: typeof logoContent,
+            error: e.message 
+          }, { level: 'error' });
+          return { ok: false, code: 'CONVERSION_ERROR', message: `로고 데이터 변환 실패: ${e.message}`, useDefault: true };
+        }
+      }
+
+      const logoBase64 = logoBuffer.toString('base64');
       const contentType = row[0].logoContentType || 'image/png';
       const dataUri = `data:${contentType};base64,${logoBase64}`;
 
