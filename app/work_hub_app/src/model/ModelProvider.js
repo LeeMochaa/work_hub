@@ -280,7 +280,8 @@ export class AuthModel {
       }
     }
 
-    const res = await this.base.call('Bootstrap', undefined, 'GET');
+    // CAP function 호출 시 괄호 필요: Bootstrap() 형식
+    const res = await this.base.call('Bootstrap()', undefined, 'GET');
 
     if (hasSession) {
       try {
@@ -300,15 +301,15 @@ export class AuthModel {
   }
 
   async resetSession() {
-    const res = await this.base.call('ResetSession', undefined, 'GET');
+    const res = await this.base.call('ResetSession()', undefined, 'GET');
     this.clearCache();
     return res;
   }
 
-  me() { return this.base.call('Me', undefined, 'GET'); }
-  myRoles() { return this.base.call('MyRoles', undefined, 'GET'); }
-  whoAmI() { return this.base.call('WhoAmI', undefined, 'GET'); }
-  serverTime() { return this.base.call('ServerTime', undefined, 'GET'); }
+  me() { return this.base.call('Me()', undefined, 'GET'); }
+  myRoles() { return this.base.call('MyRoles()', undefined, 'GET'); }
+  whoAmI() { return this.base.call('WhoAmI()', undefined, 'GET'); }
+  serverTime() { return this.base.call('ServerTime()', undefined, 'GET'); }
   ping() { return this.base.call('Ping', undefined, 'GET'); }
 
   async submitTenantConfig(config) {
