@@ -499,8 +499,9 @@ module.exports = cds.service.impl(async function () {
         logOneLine('APPROUTER_URL_DEFAULT', { approveBaseUrl });
       }
       
-      // /api/ 경로로 변경하여 인증 미들웨어를 우회
-      const approveUrl = `${approveBaseUrl}/api/approve-access?userId=${encodeURIComponent(email)}&tenant=${encodeURIComponent(tenantId || '')}`;
+      // 앱 URL로 변경 (앱 내에서 권한 승인 처리)
+      // /index.html#/approve-access?userId=...&tenant=... 형식
+      const approveUrl = `${approveBaseUrl}/index.html#/approve-access?userId=${encodeURIComponent(email)}&tenant=${encodeURIComponent(tenantId || '')}`;
       
       logOneLine('APPROVE_URL_GENERATED', { approveUrl, approveBaseUrl, tenantId });
       

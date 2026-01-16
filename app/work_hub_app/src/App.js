@@ -6,6 +6,7 @@ import Welcomer from './components/Welcomer';
 import AccessDenied from './components/AccessDenied';
 import TenantSetupWizard from './components/TenantSetupWizard';
 import LogoDisplay from './components/LogoDisplay';
+import ApproveAccess from './components/ApproveAccess';
 
 import './App.css';
 
@@ -206,10 +207,38 @@ export default function App() {
     }
   }, [auth, me]);
 
+  // URL 해시에서 approve-access 경로 체크 (bootstrap 전에도 접근 가능)
+  const [isApproveAccessPath, setIsApproveAccessPath] = useState(false);
+
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash.includes('#/approve-access')) {
+      setIsApproveAccessPath(true);
+    } else {
+      setIsApproveAccessPath(false);
+    }
+
+    // hash 변경 감지
+    const handleHashChange = () => {
+      const newHash = window.location.hash;
+      setIsApproveAccessPath(newHash.includes('#/approve-access'));
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
   return (
     <HashRouter>
+      {/* approve-access 경로는 bootstrap과 관계없이 접근 가능 */}
+      {isApproveAccessPath && (
+        <Routes>
+          <Route path="/approve-access" element={<ApproveAccess />} />
+        </Routes>
+      )}
+
       {/* 아직 아무것도 준비 안됐으면 null */}
-      {!dataReady && null}
+      {!dataReady && !isApproveAccessPath && null}
 
       {/* 🔒 권한이 없으면 AccessDenied */}
       {dataReady && accessDenied && (
@@ -247,6 +276,7 @@ export default function App() {
       {dataReady && !accessDenied && !showSetupWizard && ready && (
         <Routes>
           <Route path="/" element={<Navigate to="home" replace />} />
+          <Route path="approve-access" element={<ApproveAccess />} />
           <Route path="home" element={
             <div style={{
               display: 'flex',
