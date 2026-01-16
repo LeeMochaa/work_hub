@@ -79,8 +79,22 @@ cds.on('served', () => {
   // =======================================================
   app.get('/assets/logo', async (req, res) => {
     try {
-      const tenantId = getTenantId(req);
-      if (!tenantId) return res.status(400).send('Tenant ID not found');
+      // tenant ID 추출 (여러 소스에서 시도)
+      let tenantId = getTenantId(req);
+      
+      // tenant ID를 찾지 못한 경우 디버깅 정보 출력
+      if (!tenantId) {
+        console.error('❌ [/assets/logo] Tenant ID not found', {
+          hasTenant: !!req.tenant,
+          hasUser: !!req.user,
+          userTenant: req.user?.tenant,
+          userAttrZid: req.user?.attr?.zid,
+          headerTenant: req.headers['x-tenant-id'],
+          queryTenant: req.query?.tenant,
+          userId: req.user?.id
+        });
+        return res.status(400).send('Tenant ID not found');
+      }
 
       const { SELECT } = cds.ql;
       const TenantConfig = getTenantConfigEntity();

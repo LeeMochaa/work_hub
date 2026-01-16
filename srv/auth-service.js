@@ -399,37 +399,73 @@ module.exports = cds.service.impl(async function () {
 
       // 권한 승인 버튼 URL 생성 (AppRouter URL 사용)
       // AppRouter URL을 사용해야 인증 없이 접근 가능
-      // 환경변수에서 AppRouter URL 가져오기 (우선순위 1)
+      // MTA 배포 시 생성되는 AppRouter 호스트 이름을 동적으로 추출
+      // 
+      // 호스트 이름 패턴 분석:
+      // - 구독한 하위계정 URL: {tenant-subdomain}-{org}-{space}-{router-app-name}
+      //   예: consumer-dine-7myl0p0d-ikd-saas-work-hub-router
+      //   (하위계정명: Consumer-Dine, 하위 도메인: consumer-dine-7myl0p0d)
+      // - Provider 기본 URL: {org}-{space}-{router-app-name}
+      //   예: ikd-saas-work-hub-router
+      // - 서비스 URL: {org}-{space}-{service-app-name}
+      //   예: ikd-saas-work-hub-srv
+      //
+      // 권한 승인은 Provider 계정의 기본 AppRouter URL을 사용해야 함
+      // 서비스 URI에서 '-srv'를 '-router'로 치환하여 Provider 기본 URL 생성
+      
+      // 1) 환경변수에서 AppRouter URL 가져오기 (최우선)
       let approveBaseUrl = process.env.APPROUTER_URL;
       
-      // 환경변수가 없으면 서비스 URL에서 AppRouter URL 패턴 생성 시도
-      // 서비스 URL: ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
-      // AppRouter URL: consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com
+      // 2) 환경변수가 없으면 VCAP_APPLICATION에서 AppRouter 호스트 이름 추출
       if (!approveBaseUrl && process.env.VCAP_APPLICATION) {
         try {
           const v = JSON.parse(process.env.VCAP_APPLICATION);
-          // 서비스 URL에서 도메인 추출
           const serviceUri = v.application_uris?.[0];
+          
           if (serviceUri) {
-            // 서비스 URL 패턴: {name}-srv.cfapps.{region}.hana.ondemand.com
-            // AppRouter URL 패턴: consumer-{tenant}-{name}-router.cfapps.{region}.hana.ondemand.com
-            // 또는: {tenant}-{name}-router.cfapps.{region}.hana.ondemand.com
-            
-            // 서비스 URL에서 도메인 부분 추출
+            // 서비스 URI에서 도메인 추출
+            // 예: ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
             const domainMatch = serviceUri.match(/\.cfapps\.(.+)$/);
             if (domainMatch) {
               const domain = domainMatch[1]; // us10-001.hana.ondemand.com
               
-              // 테넌트 ID를 사용하여 AppRouter URL 생성
-              // 실제 패턴은 배포 환경에 따라 다를 수 있음
-              if (tenantId) {
-                // tenant ID의 일부를 사용하여 subdomain 생성
-                const tenantSubdomain = tenantId.substring(0, 8).replace(/-/g, ''); // 예: 1c5002c7
-                approveBaseUrl = `https://consumer-${tenantSubdomain}-ikd-saas-work-hub-router.cfapps.${domain}`;
-              } else {
-                // tenant ID가 없으면 기본 패턴 사용
-                approveBaseUrl = `https://consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.${domain}`;
+              // 서비스 URI에서 호스트 이름 부분 추출
+              // 예: ikd-saas-work-hub-srv
+              const serviceHost = serviceUri.replace(/\.cfapps\..+$/, '');
+              
+              // AppRouter 호스트 이름 패턴 추출
+              // 서비스 호스트의 마지막 '-srv'를 '-router'로 치환
+              // ikd-saas-work-hub-srv -> ikd-saas-work-hub-router
+              let routerHost = serviceHost.replace(/-srv$/, '-router');
+              
+              // 패턴 매칭 실패 시 (예: 다른 이름 패턴)
+              if (routerHost === serviceHost) {
+                // 서비스 호스트의 마지막 단어를 'router'로 치환 시도
+                routerHost = serviceHost.replace(/[^-]+$/, 'router');
+                
+                // 여전히 매칭 실패 시 MTA 모듈 이름 사용 (work_hub-router -> work-hub-router)
+                if (routerHost === serviceHost || !routerHost) {
+                  // {org}-{space}-work-hub-router 형식으로 생성
+                  const hostParts = serviceHost.split('-');
+                  if (hostParts.length >= 2) {
+                    // org와 space를 유지하고 마지막을 router로
+                    routerHost = hostParts.slice(0, -1).join('-') + '-work-hub-router';
+                  } else {
+                    routerHost = 'work-hub-router';
+                  }
+                }
               }
+              
+              // 완전한 AppRouter URL 구성
+              approveBaseUrl = `https://${routerHost}.cfapps.${domain}`;
+              
+              logOneLine('APPROUTER_URL_EXTRACTED', { 
+                serviceUri, 
+                serviceHost,
+                domain, 
+                routerHost, 
+                approveBaseUrl 
+              });
             }
           }
         } catch (e) {
@@ -437,12 +473,10 @@ module.exports = cds.service.impl(async function () {
         }
       }
       
-      // 여전히 없으면 하드코딩된 기본값 사용 (운영 환경)
+      // 3) 여전히 없으면 로컬 개발 환경 기본값
       if (!approveBaseUrl) {
-        // 운영 환경 기본값
-        approveBaseUrl = process.env.NODE_ENV === 'production' 
-          ? 'https://consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com'
-          : 'http://localhost:4004';
+        approveBaseUrl = 'http://localhost:4004';
+        logOneLine('APPROUTER_URL_DEFAULT', { approveBaseUrl });
       }
       
       // /api/ 경로로 변경하여 인증 미들웨어를 우회
