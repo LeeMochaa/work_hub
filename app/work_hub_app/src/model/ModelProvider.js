@@ -226,18 +226,23 @@ export class ODataClient {
     const contentType = res.headers.get('content-type') || '';
     let json = {};
     
-    // Response 스트림은 한 번만 읽을 수 있으므로, clone하거나 한 방법으로만 읽어야 함
+    // Response 스트림은 한 번만 읽을 수 있으므로, text()로 읽어서 처리
     try {
-      if (contentType.includes('application/json')) {
-        json = await res.json();
-      } else {
-        // JSON이 아니면 텍스트로 읽어서 파싱 시도
-        const text = await res.text();
-        if (text && text.trim()) {
-          try {
-            json = JSON.parse(text);
-          } catch (e) {
-            // 파싱 실패 시 빈 객체 (텍스트 응답일 수도 있음)
+      // res.json() 대신 res.text()를 사용하여 Readable 스트림 문제 방지
+      const text = await res.text();
+      
+      if (text && text.trim()) {
+        try {
+          // 텍스트를 JSON으로 파싱
+          json = JSON.parse(text);
+        } catch (e) {
+          // 파싱 실패 시
+          if (contentType.includes('application/json')) {
+            // JSON이라고 했는데 파싱 실패하면 오류
+            console.error(`[ODataClient] JSON 파싱 실패 (${path}):`, e.message);
+            throw new Error(`JSON 파싱 실패: ${e.message}`);
+          } else {
+            // JSON이 아니면 텍스트 응답으로 처리
             console.warn(`[ODataClient] JSON 파싱 실패 (${path}), 텍스트 응답으로 처리:`, e.message);
             json = { raw: text };
           }
