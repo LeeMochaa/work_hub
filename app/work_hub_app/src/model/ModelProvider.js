@@ -217,18 +217,29 @@ export class ODataClient {
 
     // 응답이 JSON인지 확인
     const contentType = res.headers.get('content-type') || '';
-    let json;
+    let json = {};
     
-    if (contentType.includes('application/json')) {
-      json = await res.json().catch(() => ({}));
-    } else {
-      // JSON이 아니면 텍스트로 읽어서 파싱 시도
-      const text = await res.text().catch(() => '{}');
-      try {
-        json = JSON.parse(text);
-      } catch (e) {
-        json = {};
+    // Response 스트림은 한 번만 읽을 수 있으므로, clone하거나 한 방법으로만 읽어야 함
+    try {
+      if (contentType.includes('application/json')) {
+        json = await res.json();
+      } else {
+        // JSON이 아니면 텍스트로 읽어서 파싱 시도
+        const text = await res.text();
+        if (text && text.trim()) {
+          try {
+            json = JSON.parse(text);
+          } catch (e) {
+            // 파싱 실패 시 빈 객체 (텍스트 응답일 수도 있음)
+            console.warn(`[ODataClient] JSON 파싱 실패 (${path}), 텍스트 응답으로 처리:`, e.message);
+            json = { raw: text };
+          }
+        }
       }
+    } catch (e) {
+      // 응답 읽기 실패
+      console.warn(`[ODataClient] 응답 읽기 실패 (${path}):`, e.message);
+      // 오류가 발생해도 빈 객체로 진행 (상태 코드로 판단)
     }
 
     if (!res.ok) {
@@ -332,13 +343,26 @@ export class AuthModel {
   }
 
   async getLogo() {
-    // CAP function 호출: GetLogo() 형식
-    const res = await this.base.call('GetLogo()', undefined, 'GET');
-    if (!res.ok) {
-      throw new Error(res.message || '로고를 가져올 수 없습니다.');
+    try {
+      // CAP function 호출: GetLogo() 형식
+      const res = await this.base.call('GetLogo()', undefined, 'GET');
+      
+      // 응답이 올바른 형식인지 확인
+      if (!res || typeof res !== 'object') {
+        throw new Error('로고 조회 실패: 잘못된 응답 형식');
+      }
+      
+      if (!res.ok) {
+        throw new Error(res.message || '로고를 가져올 수 없습니다.');
+      }
+      
+      // base64 data URI 반환
+      return res.logoBase64 || null;
+    } catch (error) {
+      // 오류 메시지 개선
+      const message = error.message || '로고 조회 실패';
+      throw new Error(`로고 조회 실패: ${message}`);
     }
-    // base64 data URI 반환
-    return res.logoBase64;
   }
 }
 
