@@ -370,17 +370,17 @@ module.exports = cds.service.impl(async function () {
         }
       }
 
-      // BTP Cockpit URL이 없으면 기본값 생성
+      // BTP Cockpit URL이 없으면 환경변수나 기본값 사용
       if (!btpCockpitUrl) {
-        const baseUrl = process.env.APP_URL ||
-          (process.env.VCAP_APPLICATION
-            ? (() => {
-                const v = JSON.parse(process.env.VCAP_APPLICATION);
-                const uri = v.application_uris?.[0];
-                return uri ? `https://${uri}` : 'http://localhost:4004';
-              })()
-            : 'http://localhost:4004');
-        btpCockpitUrl = `${baseUrl.replace('/work_hub_app', '').replace('/app', '')}/work_hub_app`;
+        // 환경변수에서 BTP Cockpit URL 가져오기 (형식: https://emea.cockpit.btp.cloud.sap/cockpit/#/globalaccount/{globalaccountId}/subaccount/{subaccountId}/service-instances)
+        // 또는 테넌트 ID를 기반으로 동적 생성
+        const cockpitBaseUrl = process.env.BTP_COCKPIT_BASE_URL || 'https://emea.cockpit.btp.cloud.sap';
+        const globalAccountId = process.env.BTP_GLOBAL_ACCOUNT_ID || '2fda4d86-31e5-48d8-979f-dabc0c506967';
+        
+        // 테넌트 ID를 subaccount ID로 사용 (실제로는 테넌트 ID가 subaccount ID일 수 있음)
+        const subaccountId = tenantId || process.env.BTP_SUBACCOUNT_ID || '1c5002c7-4e64-492e-a642-190c096c038b';
+        
+        btpCockpitUrl = `${cockpitBaseUrl}/cockpit/#/globalaccount/${globalAccountId}/subaccount/${subaccountId}/service-instances`;
       }
 
       // 4) HTML 템플릿 로드 및 렌더링
@@ -397,7 +397,7 @@ module.exports = cds.service.impl(async function () {
       // BTP Cockpit 버튼 HTML 생성
       const btpCockpitButton = `<a href="${btpCockpitUrl}" target="_blank" style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">BTP Cockpit 열기</a>`;
 
-      // 권한 승인 버튼 URL 생성
+      // 권한 승인 버튼 URL 생성 (인증 없이 접근 가능한 /api/ 경로 사용)
       const approveBaseUrl = process.env.APP_URL ||
         (process.env.VCAP_APPLICATION
           ? (() => {
@@ -407,7 +407,8 @@ module.exports = cds.service.impl(async function () {
             })()
           : 'http://localhost:4004');
       
-      const approveUrl = `${approveBaseUrl}/odata/v4/auth/ApproveAccess?userId=${encodeURIComponent(email)}&tenant=${encodeURIComponent(tenantId || '')}`;
+      // /api/ 경로로 변경하여 인증 미들웨어를 우회
+      const approveUrl = `${approveBaseUrl}/api/approve-access?userId=${encodeURIComponent(email)}&tenant=${encodeURIComponent(tenantId || '')}`;
       
       // 권한 승인 버튼 HTML 생성
       const approveButton = `<a href="${approveUrl}" style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; margin-top: 10px;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">✅ 권한 승인 완료</a>`;

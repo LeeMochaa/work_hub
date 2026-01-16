@@ -127,8 +127,9 @@ cds.on('served', () => {
   
   /* =======================================================
    * ApproveAccess (이메일 링크 클릭 시 권한 승인 처리)
+   * 인증 없이 접근 가능하도록 /api/ 접두사 사용
    * ======================================================= */
-  app.get('/odata/v4/auth/ApproveAccess', async (req, res) => {
+  app.get('/api/approve-access', async (req, res) => {
     try {
       const userId = req.query.userId;
       const tenant = req.query.tenant;

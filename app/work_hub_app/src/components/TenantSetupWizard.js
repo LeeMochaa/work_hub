@@ -163,7 +163,23 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth, user, bo
 
     try {
       // cockpitUrl 자동 생성 (현재 URL 기반)
+      // BTP Cockpit URL 생성 (실제 Cockpit 주소)
       const getCockpitUrl = () => {
+        // 환경변수나 설정에서 가져오거나, 기본값 사용
+        // 실제 운영 환경에서는 테넌트별로 다른 subaccount ID를 사용할 수 있음
+        const cockpitBaseUrl = process.env.REACT_APP_BTP_COCKPIT_BASE_URL || 'https://emea.cockpit.btp.cloud.sap';
+        const globalAccountId = process.env.REACT_APP_BTP_GLOBAL_ACCOUNT_ID || '2fda4d86-31e5-48d8-979f-dabc0c506967';
+        
+        // 테넌트 ID를 subaccount ID로 사용 (실제로는 테넌트 ID가 subaccount ID일 수 있음)
+        // 또는 별도로 관리되는 subaccount ID 사용
+        const subaccountId = process.env.REACT_APP_BTP_SUBACCOUNT_ID || '1c5002c7-4e64-492e-a642-190c096c038b';
+        
+        // 개발 환경에서는 null 반환 (자동 생성되지 않도록)
+        if (window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1')) {
+          return null;
+        }
+        
+        return `${cockpitBaseUrl}/cockpit/#/globalaccount/${globalAccountId}/subaccount/${subaccountId}/service-instances`;
         const currentUrl = window.location.href;
         try {
           // URL에서 호스트 추출
