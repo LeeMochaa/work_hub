@@ -201,13 +201,29 @@ export default function TenantSetupWizard({ onComplete, onCancel, Auth, user, bo
         }
       };
 
+      // 현재 브라우저 URL에서 AppRouter URL 추출 (Consumer 또는 Provider)
+      const getAppRouterUrl = () => {
+        try {
+          const currentUrl = window.location.origin; // https://consumer-dine-7myl0p0d-ikd-saas-work-hub-router.cfapps.us10-001.hana.ondemand.com
+          if (currentUrl.includes('localhost') || currentUrl.includes('127.0.0.1')) {
+            // 개발 환경에서는 null로 설정
+            return null;
+          }
+          return currentUrl;
+        } catch (e) {
+          console.warn('AppRouter URL 추출 실패:', e);
+          return null;
+        }
+      };
+
       const config = {
         companyName: companyName.trim(),
         companyLogoUrl: '/odata/v4/auth/GetLogo()',  // auth-service의 GetLogo 함수 사용
         timezone: timezone,
         language: language,
         adminEmail: adminEmail.trim(),
-        btpCockpitUrl: getCockpitUrl()
+        btpCockpitUrl: getCockpitUrl(),
+        appRouterUrl: getAppRouterUrl()  // 현재 브라우저의 AppRouter URL
       };
 
       // 디버깅: 전송되는 config 확인
