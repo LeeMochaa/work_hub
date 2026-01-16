@@ -714,6 +714,10 @@ BTP Cockpit: ${btpCockpitUrl}
     const adminEmail = String(config.adminEmail || '').trim();
     const companyLogoUrl = String(config.companyLogoUrl || '/odata/v4/auth/GetLogo()').trim();
     const btpCockpitUrl = String(config.btpCockpitUrl || '').trim();
+    // 프론트엔드에서 전달한 AppRouter URL (Consumer 또는 Provider)
+    // 프론트엔드는 window.location.origin으로 현재 브라우저의 AppRouter URL을 전달함
+    // 이 값이 있으면 이걸 우선 사용 (srv는 Provider에 배포되어 있으므로 Host 헤더는 Provider URL일 수 있음)
+    const appRouterUrlFromConfig = (config.appRouterUrl && String(config.appRouterUrl).trim()) || null;
     const logoData = config.logo || null;
 
     if (!companyName) {
@@ -752,10 +756,16 @@ BTP Cockpit: ${btpCockpitUrl}
       }
     }
 
-    // AppRouter URL 추출 (요청의 Host 헤더에서)
-    // Consumer 계정에서 실행 중이면 Host 헤더가 Consumer AppRouter URL
-    let appRouterUrl = null;
-    if (req) {
+    // AppRouter URL 추출
+    // 중요: srv는 Provider에 배포되어 있으므로, req.headers['host']는 Provider URL일 수 있음
+    // Consumer 계정에서 접근할 때는 프론트엔드(window.location.origin)가 Consumer AppRouter URL을 가짐
+    // 따라서 프론트엔드에서 전달한 appRouterUrl을 최우선으로 사용해야 함
+    // 
+    // 우선순위: 1) 프론트엔드에서 전달한 appRouterUrl (반드시 우선), 2) 요청의 Host 헤더에서 추출 (fallback)
+    let appRouterUrl = appRouterUrlFromConfig;
+    
+    // 프론트엔드에서 전달한 URL이 없으면 요청의 Host 헤더에서 추출 (fallback)
+    if (!appRouterUrl && req) {
       const hostHeader = req.headers['host'] || req.headers['x-forwarded-host'];
       
       if (hostHeader) {
