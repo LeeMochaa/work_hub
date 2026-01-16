@@ -402,21 +402,23 @@ module.exports = cds.service.impl(async function () {
       // MTA 배포 시 생성되는 AppRouter 호스트 이름을 동적으로 추출
       // 
       // 호스트 이름 패턴 분석:
-      // - 구독한 하위계정 URL: {tenant-subdomain}-{org}-{space}-{router-app-name}
+      // - Consumer 계정 URL: {tenant-subdomain}-{org}-{space}-{router-app-name}
       //   예: consumer-dine-7myl0p0d-ikd-saas-work-hub-router
       //   (하위계정명: Consumer-Dine, 하위 도메인: consumer-dine-7myl0p0d)
+      // - Consumer 계정 서비스 URL: {tenant-subdomain}-{org}-{space}-{service-app-name}
+      //   예: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv
       // - Provider 기본 URL: {org}-{space}-{router-app-name}
       //   예: ikd-saas-work-hub-router
-      // - 서비스 URL: {org}-{space}-{service-app-name}
-      //   예: ikd-saas-work-hub-srv
       //
-      // 권한 승인은 Provider 계정의 기본 AppRouter URL을 사용해야 함
-      // 서비스 URI에서 '-srv'를 '-router'로 치환하여 Provider 기본 URL 생성
+      // 권한 승인은 현재 실행 중인 계정(Consumer 또는 Provider)의 AppRouter URL을 사용해야 함
+      // 서비스 URI에서 '-srv'를 '-router'로 치환하여 AppRouter URL 생성
+      // 이렇게 하면 Consumer 계정에서는 Consumer URL, Provider 계정에서는 Provider URL이 생성됨
       
       // 1) 환경변수에서 AppRouter URL 가져오기 (최우선)
       let approveBaseUrl = process.env.APPROUTER_URL;
       
       // 2) 환경변수가 없으면 VCAP_APPLICATION에서 AppRouter 호스트 이름 추출
+      // 서비스 URI가 Consumer 계정이면 Consumer URL, Provider 계정이면 Provider URL이 자동 생성됨
       if (!approveBaseUrl && process.env.VCAP_APPLICATION) {
         try {
           const v = JSON.parse(process.env.VCAP_APPLICATION);
@@ -424,18 +426,21 @@ module.exports = cds.service.impl(async function () {
           
           if (serviceUri) {
             // 서비스 URI에서 도메인 추출
-            // 예: ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
+            // Consumer 계정: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
+            // Provider 계정: ikd-saas-work-hub-srv.cfapps.us10-001.hana.ondemand.com
             const domainMatch = serviceUri.match(/\.cfapps\.(.+)$/);
             if (domainMatch) {
               const domain = domainMatch[1]; // us10-001.hana.ondemand.com
               
               // 서비스 URI에서 호스트 이름 부분 추출
-              // 예: ikd-saas-work-hub-srv
+              // Consumer 계정: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv
+              // Provider 계정: ikd-saas-work-hub-srv
               const serviceHost = serviceUri.replace(/\.cfapps\..+$/, '');
               
               // AppRouter 호스트 이름 패턴 추출
               // 서비스 호스트의 마지막 '-srv'를 '-router'로 치환
-              // ikd-saas-work-hub-srv -> ikd-saas-work-hub-router
+              // Consumer: consumer-dine-7myl0p0d-ikd-saas-work-hub-srv -> consumer-dine-7myl0p0d-ikd-saas-work-hub-router
+              // Provider: ikd-saas-work-hub-srv -> ikd-saas-work-hub-router
               let routerHost = serviceHost.replace(/-srv$/, '-router');
               
               // 패턴 매칭 실패 시 (예: 다른 이름 패턴)
@@ -445,10 +450,11 @@ module.exports = cds.service.impl(async function () {
                 
                 // 여전히 매칭 실패 시 MTA 모듈 이름 사용 (work_hub-router -> work-hub-router)
                 if (routerHost === serviceHost || !routerHost) {
-                  // {org}-{space}-work-hub-router 형식으로 생성
+                  // {tenant-subdomain}-{org}-{space}-work-hub-router 형식으로 생성
+                  // (서비스 호스트가 이미 테넌트 서브도메인 포함 여부와 관계없이 동작)
                   const hostParts = serviceHost.split('-');
                   if (hostParts.length >= 2) {
-                    // org와 space를 유지하고 마지막을 router로
+                    // 마지막 'srv' 부분만 'router'로 치환
                     routerHost = hostParts.slice(0, -1).join('-') + '-work-hub-router';
                   } else {
                     routerHost = 'work-hub-router';
@@ -464,7 +470,8 @@ module.exports = cds.service.impl(async function () {
                 serviceHost,
                 domain, 
                 routerHost, 
-                approveBaseUrl 
+                approveBaseUrl,
+                tenantId 
               });
             }
           }
