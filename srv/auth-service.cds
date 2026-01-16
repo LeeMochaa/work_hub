@@ -94,6 +94,7 @@ service AuthService @(
     language         : String(10);
     adminEmail       : String(200);  // ADMIN의 권한 요청 수신 이메일
     btpCockpitUrl    : String(500);   // BTP Cockpit URL (선택사항, 없으면 자동 생성)
+    appRouterUrl     : String(500);   // AppRouter URL (Consumer 또는 Provider) - 프론트엔드에서 window.location.origin 전달
     logo             : LogoInput;     // 로고 업로드 (선택사항, JavaScript에서 null 체크)
   }
 
