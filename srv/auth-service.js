@@ -187,6 +187,19 @@ module.exports = cds.service.impl(async function () {
   // Bootstrap (dev-hub 방식)
   // =====================================================
   this.on('Bootstrap', async (req) => {
+    // 디버깅: 실제 전달되는 스코프 확인
+    const userObj = req.user || {};
+    const scopes = userObj.scopes || [];
+    const scopeNames = Array.isArray(scopes) ? scopes.map(s => typeof s === 'string' ? s : s?.name || String(s)) : [];
+    
+    logOneLine('BOOTSTRAP_DEBUG_SCOPES', {
+      userId: userObj.id || userObj.name,
+      scopes: scopeNames,
+      hasIsMethod: typeof userObj.is === 'function',
+      isUser: userObj.is ? userObj.is('User') : null,
+      isWorkHubUser: userObj.is ? userObj.is('work_hub.User') : null
+    });
+    
     const user = getUserProfile(req);
     const roles = getRoles(req);
     const flags = getRoleFlags(req);
