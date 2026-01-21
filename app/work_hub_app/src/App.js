@@ -33,11 +33,22 @@ export default function App() {
   }, []);
 
   // 🔹 최초 로드 시 /auth/Bootstrap 호출
+  // bootstrap()의 기본값이 force: true이므로 항상 최신 사용자 정보를 가져옴
   useEffect(() => {
     (async () => {
       try {
         const data = await auth.bootstrap();
         setBoot(data);
+        
+        // 새 탭에서 인증을 받은 경우, 부모 창에 인증 완료 메시지 전송
+        if (window.opener && !window.opener.closed) {
+          try {
+            window.opener.postMessage('auth-complete', window.location.origin);
+            console.log('[App] 인증 완료 메시지를 부모 창에 전송했습니다.');
+          } catch (e) {
+            console.warn('[App] 부모 창에 메시지 전송 실패:', e);
+          }
+        }
 
         const flags = data.flags || {};
         // 디버깅용 로그

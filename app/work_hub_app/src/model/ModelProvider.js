@@ -53,6 +53,222 @@ function buildQuery(params) {
 }
 
 // -------------------------------------------------------
+// 전역 인증 관리자 (AOP 방식으로 401 처리)
+// -------------------------------------------------------
+class AuthManager {
+  constructor() {
+    this.pendingRequests = []; // 실패한 요청 큐
+    this.isAuthenticating = false; // 인증 진행 중 플래그
+    this.authWindow = null; // 인증 창 참조
+    this.listeners = []; // 인증 완료 리스너
+    this.setupMessageListener();
+  }
+
+  // 실패한 요청을 큐에 추가
+  queueRequest(requestInfo) {
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.push({
+        ...requestInfo,
+        resolve,
+        reject
+      });
+      
+      // 첫 번째 요청이면 인증 시작
+      if (!this.isAuthenticating) {
+        this.startAuthentication();
+      }
+    });
+  }
+
+  // 인증 시작
+  startAuthentication() {
+    if (this.isAuthenticating) return;
+    
+    this.isAuthenticating = true;
+    const authUrl = window.location.origin + window.location.pathname;
+    
+    // 새 탭에서 인증 창 열기
+    this.authWindow = window.open(
+      authUrl,
+      'authWindow',
+      'width=800,height=600,scrollbars=yes,resizable=yes'
+    );
+    
+    if (!this.authWindow) {
+      // 팝업이 차단된 경우 현재 탭에서 리다이렉트
+      console.warn('[AuthManager] 팝업이 차단되었습니다. 현재 탭에서 인증을 진행합니다.');
+      window.location.href = authUrl;
+      return;
+    }
+    
+    // 새 탭이 닫혔는지 확인
+    const checkClosed = setInterval(() => {
+      if (this.authWindow && this.authWindow.closed) {
+        clearInterval(checkClosed);
+        // 새 탭이 닫혔으면 인증이 완료되었을 가능성이 높음
+        setTimeout(() => {
+          this.onAuthComplete();
+        }, 1000);
+      }
+    }, 500);
+  }
+
+  // 메시지 리스너 설정 (한 번만)
+  setupMessageListener() {
+    if (this.messageListenerSetup) return;
+    this.messageListenerSetup = true;
+    
+    window.addEventListener('message', (event) => {
+      // 보안: 같은 origin에서만 메시지 수신
+      if (event.origin !== window.location.origin) return;
+      
+      if (event.data === 'auth-complete') {
+        console.log('[AuthManager] 인증 완료 메시지를 받았습니다.');
+        this.onAuthComplete();
+      }
+    });
+  }
+
+  // 인증 완료 처리
+  async onAuthComplete() {
+    console.log('[AuthManager] 인증이 완료되었습니다. 대기 중인 요청들을 재시도합니다.');
+    
+    this.isAuthenticating = false;
+    if (this.authWindow) {
+      this.authWindow.close();
+      this.authWindow = null;
+    }
+    
+    // 잠시 대기 (세션 쿠키가 브라우저에 설정될 시간)
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // 대기 중인 요청들을 재시도
+    const requests = [...this.pendingRequests];
+    this.pendingRequests = [];
+    
+    for (const request of requests) {
+      try {
+        // CSRF 토큰 갱신 (POST, PUT, PATCH, DELETE 메서드인 경우)
+        const headers = { ...request.headers };
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
+          try {
+            // baseUrl이 있으면 사용, 없으면 URL에서 추출
+            let baseUrl = request.baseUrl;
+            if (!baseUrl) {
+              // URL에서 baseUrl 추출 (예: /odata/v4/auth/Bootstrap() -> /odata/v4/auth)
+              const urlObj = new URL(request.url, window.location.origin);
+              const pathParts = urlObj.pathname.split('/').filter(Boolean);
+              // odata/v4/auth 같은 경로까지 추출
+              let basePath = '';
+              if (pathParts.length >= 2) {
+                basePath = '/' + pathParts.slice(0, 3).join('/'); // odata/v4/service
+              } else {
+                basePath = urlObj.pathname;
+              }
+              baseUrl = urlObj.origin + basePath;
+            } else {
+              // baseUrl이 상대 경로인 경우 절대 경로로 변환
+              if (!baseUrl.startsWith('http')) {
+                baseUrl = window.location.origin + (baseUrl.startsWith('/') ? baseUrl : '/' + baseUrl);
+              }
+            }
+            
+            // CSRF 토큰 가져오기
+            const csrfRes = await fetch(baseUrl, {
+              method: 'GET',
+              headers: { 'x-csrf-token': 'Fetch' },
+              credentials: 'include' // 쿠키 포함
+            });
+            const csrfToken = csrfRes.headers.get('x-csrf-token');
+            if (csrfToken) {
+              headers['x-csrf-token'] = csrfToken;
+            }
+          } catch (e) {
+            console.warn('[AuthManager] CSRF 토큰 갱신 실패:', e);
+          }
+        }
+        
+        // 요청 재시도 (credentials: 'include'로 쿠키 포함)
+        const response = await fetch(request.url, {
+          method: request.method,
+          headers,
+          body: request.body,
+          credentials: 'include' // 세션 쿠키 포함
+        });
+        
+        if (response.ok) {
+          // 응답 본문이 있는 경우에만 파싱
+          const contentType = response.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            try {
+              const text = await response.text();
+              const data = text ? JSON.parse(text) : {};
+              request.resolve(data);
+            } catch (e) {
+              // JSON 파싱 실패 시 빈 객체 반환
+              request.resolve({});
+            }
+          } else {
+            // JSON이 아니면 빈 객체 반환 (DELETE 등)
+            request.resolve({});
+          }
+        } else if (response.status === 401) {
+          // 여전히 401이면 다시 큐에 추가
+          console.warn('[AuthManager] 재시도 후에도 401 에러 발생. 다시 인증을 시작합니다.');
+          this.pendingRequests.push(request);
+          // 인증 다시 시작
+          if (!this.isAuthenticating) {
+            this.startAuthentication();
+          }
+        } else {
+          // 응답 본문 읽기 시도
+          let errorData = {};
+          try {
+            const text = await response.text();
+            if (text) {
+              errorData = JSON.parse(text);
+            }
+          } catch (e) {
+            // 파싱 실패는 무시
+          }
+          
+          const error = new Error(`[재시도] ${response.status} ${response.statusText}`);
+          error.status = response.status;
+          error.statusText = response.statusText;
+          error.data = errorData;
+          request.reject(error);
+        }
+      } catch (error) {
+        request.reject(error);
+      }
+    }
+    
+    // 리스너들에게 알림
+    this.listeners.forEach(listener => {
+      try {
+        listener();
+      } catch (e) {
+        console.warn('[AuthManager] 리스너 실행 중 오류:', e);
+      }
+    });
+  }
+
+  // 인증 완료 리스너 등록
+  onAuthCompleteListener(callback) {
+    this.listeners.push(callback);
+    return () => {
+      const index = this.listeners.indexOf(callback);
+      if (index > -1) {
+        this.listeners.splice(index, 1);
+      }
+    };
+  }
+}
+
+// 전역 인증 관리자 인스턴스 (싱글톤)
+const globalAuthManager = new AuthManager();
+
+// -------------------------------------------------------
 // OData V4 Client (CAP/AppRouter 전제)
 // -------------------------------------------------------
 export class ODataClient {
@@ -86,7 +302,11 @@ export class ODataClient {
         init.headers['x-csrf-token'] = csrfToken;
       }
 
-      const res = await fetch(url, init);
+      // credentials: 'include' 추가 (세션 쿠키 포함)
+      const res = await fetch(url, {
+        ...init,
+        credentials: 'include'
+      });
 
       // 403 Forbidden이면 CSRF 토큰 문제일 수 있으므로 재시도
       if (res.status === 403) {
@@ -101,7 +321,10 @@ export class ODataClient {
                 'x-csrf-token': this.csrfToken
               }
             };
-            const retry = await fetch(url, retryInit);
+            const retry = await fetch(url, {
+              ...retryInit,
+              credentials: 'include'
+            });
             return retry;
           }
         } catch (e) {
@@ -112,7 +335,10 @@ export class ODataClient {
       return res;
     }
 
-    return fetch(url, init);
+    return fetch(url, {
+      ...init,
+      credentials: 'include'
+    });
   }
 
   async ensureCsrf() {
@@ -165,61 +391,194 @@ export class ODataClient {
     return `(${parts.join(',')})`;
   }
 
+  // 401 Unauthorized 처리: 전역 인증 관리자를 통해 처리
+  async handleUnauthorized(res, operation, requestInfo) {
+    if (res.status === 401) {
+      console.warn(`[ODataClient] 401 Unauthorized (${operation}) - 세션이 만료되었습니다. 전역 인증 관리자를 통해 처리합니다.`);
+      
+      // baseUrl도 함께 전달 (CSRF 토큰 갱신용)
+      const requestInfoWithBase = {
+        ...requestInfo,
+        baseUrl: this.baseUrl
+      };
+      
+      // 요청 정보를 큐에 추가하고 인증 완료를 기다림
+      return globalAuthManager.queueRequest(requestInfoWithBase);
+    }
+    return null;
+  }
+
   async select(entitySet, options) {
     const qs = buildQuery(options);
-    const res = await this.fetch(join(this.baseUrl, `${entitySet}${qs}`));
-    if (!res.ok) throw new Error(`[SELECT ${entitySet}] ${res.status} ${res.statusText}`);
+    const url = join(this.baseUrl, `${entitySet}${qs}`);
+    const res = await this.fetch(url);
+    if (!res.ok) {
+      if (res.status === 401) {
+        const retry = await this.handleUnauthorized(res, `SELECT ${entitySet}`, {
+          url,
+          method: 'GET',
+          headers: {},
+          body: null
+        });
+        if (retry) return retry;
+      }
+      throw new Error(`[SELECT ${entitySet}] ${res.status} ${res.statusText}`);
+    }
     return res.json();
   }
 
   async getByKey(entitySet, key, options) {
     const qs = buildQuery(options);
-    const res = await this.fetch(`${this.baseUrl}/${entitySet}${this.keyPredicate(key)}${qs}`);
-    if (!res.ok) throw new Error(`[GET ${entitySet}] ${res.status} ${res.statusText}`);
+    const url = `${this.baseUrl}/${entitySet}${this.keyPredicate(key)}${qs}`;
+    const res = await this.fetch(url);
+    if (!res.ok) {
+      if (res.status === 401) {
+        const retry = await this.handleUnauthorized(res, `GET ${entitySet}`, {
+          url,
+          method: 'GET',
+          headers: {},
+          body: null
+        });
+        if (retry) return retry;
+      }
+      throw new Error(`[GET ${entitySet}] ${res.status} ${res.statusText}`);
+    }
     return res.json();
   }
 
   async create(entitySet, data) {
-    const res = await this.fetch(`${this.baseUrl}/${entitySet}`, {
+    const url = `${this.baseUrl}/${entitySet}`;
+    const headers = { 'Content-Type': 'application/json' };
+    const body = JSON.stringify(data);
+    
+    // CSRF 토큰 추가
+    try {
+      const csrfToken = await this.ensureCsrf();
+      if (csrfToken) {
+        headers['x-csrf-token'] = csrfToken;
+      }
+    } catch (e) {
+      console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
+    }
+    
+    const res = await this.fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      headers,
+      body
     });
-    if (!res.ok) throw new Error(`[CREATE ${entitySet}] ${res.status} ${res.statusText}`);
+    
+    if (!res.ok) {
+      if (res.status === 401) {
+        const retry = await this.handleUnauthorized(res, `CREATE ${entitySet}`, {
+          url,
+          method: 'POST',
+          headers,
+          body
+        });
+        if (retry) return retry;
+      }
+      throw new Error(`[CREATE ${entitySet}] ${res.status} ${res.statusText}`);
+    }
     return res.json();
   }
 
   async update(entitySet, key, data, opts) {
-    const res = await this.fetch(`${this.baseUrl}/${entitySet}${this.keyPredicate(key)}`, {
+    const url = `${this.baseUrl}/${entitySet}${this.keyPredicate(key)}`;
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(opts?.etag ? { 'If-Match': opts.etag } : { 'If-Match': '*' })
+    };
+    const body = JSON.stringify(data);
+    
+    // CSRF 토큰 추가
+    try {
+      const csrfToken = await this.ensureCsrf();
+      if (csrfToken) {
+        headers['x-csrf-token'] = csrfToken;
+      }
+    } catch (e) {
+      console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
+    }
+    
+    const res = await this.fetch(url, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(opts?.etag ? { 'If-Match': opts.etag } : { 'If-Match': '*' })
-      },
-      body: JSON.stringify(data)
+      headers,
+      body
     });
-    if (!res.ok) throw new Error(`[UPDATE ${entitySet}] ${res.status} ${res.statusText}`);
+    
+    if (!res.ok) {
+      if (res.status === 401) {
+        const retry = await this.handleUnauthorized(res, `UPDATE ${entitySet}`, {
+          url,
+          method: 'PATCH',
+          headers,
+          body
+        });
+        if (retry) return retry;
+      }
+      throw new Error(`[UPDATE ${entitySet}] ${res.status} ${res.statusText}`);
+    }
     return res.json().catch(() => ({}));
   }
 
   async delete(entitySet, key, opts) {
-    const res = await this.fetch(`${this.baseUrl}/${entitySet}${this.keyPredicate(key)}`, {
-      method: 'DELETE',
-      headers: {
-        ...(opts?.etag ? { 'If-Match': opts.etag } : { 'If-Match': '*' })
+    const url = `${this.baseUrl}/${entitySet}${this.keyPredicate(key)}`;
+    const headers = {
+      ...(opts?.etag ? { 'If-Match': opts.etag } : { 'If-Match': '*' })
+    };
+    
+    // CSRF 토큰 추가
+    try {
+      const csrfToken = await this.ensureCsrf();
+      if (csrfToken) {
+        headers['x-csrf-token'] = csrfToken;
       }
+    } catch (e) {
+      console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
+    }
+    
+    const res = await this.fetch(url, {
+      method: 'DELETE',
+      headers
     });
-    if (!res.ok) throw new Error(`[DELETE ${entitySet}] ${res.status} ${res.statusText}`);
+    
+    if (!res.ok) {
+      if (res.status === 401) {
+        const retry = await this.handleUnauthorized(res, `DELETE ${entitySet}`, {
+          url,
+          method: 'DELETE',
+          headers,
+          body: null
+        });
+        if (retry !== null) return retry === true ? true : retry;
+      }
+      throw new Error(`[DELETE ${entitySet}] ${res.status} ${res.statusText}`);
+    }
     return true;
   }
 
   async call(path, payload, method = 'POST', extraQuery) {
     const qs = buildQuery(extraQuery);
     const url = join(this.baseUrl, `${path}${qs}`);
+    const headers = payload ? { 'Content-Type': 'application/json' } : {};
+    const body = payload ? JSON.stringify(payload) : undefined;
+    
+    // CSRF 토큰 추가 (POST, PUT, PATCH, DELETE 메서드인 경우)
+    if (method !== 'GET' && method !== 'HEAD') {
+      try {
+        const csrfToken = await this.ensureCsrf();
+        if (csrfToken) {
+          headers['x-csrf-token'] = csrfToken;
+        }
+      } catch (e) {
+        console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
+      }
+    }
+    
     const res = await this.fetch(url, {
       method,
-      headers: payload ? { 'Content-Type': 'application/json' } : undefined,
-      body: payload ? JSON.stringify(payload) : undefined
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
+      body
     });
 
     // 응답이 JSON인지 확인
@@ -255,6 +614,16 @@ export class ODataClient {
     }
 
     if (!res.ok) {
+      if (res.status === 401) {
+        const retry = await this.handleUnauthorized(res, `CALL ${path}`, {
+          url,
+          method,
+          headers,
+          body
+        });
+        if (retry) return retry;
+      }
+      
       const err = new Error(`[CALL ${path}] ${res.status} ${res.statusText}`);
       err.status = res.status;
       err.statusText = res.statusText;
@@ -286,7 +655,8 @@ export class AuthModel {
   }
 
   async bootstrap(options = {}) {
-    const { force = false } = options;
+    // 기본값을 true로 변경: 항상 최신 사용자 정보를 가져오도록
+    const { force = true } = options;
 
     const hasSession =
       typeof window !== 'undefined' && typeof window.sessionStorage !== 'undefined';
@@ -308,6 +678,27 @@ export class AuthModel {
 
     if (hasSession) {
       try {
+        // 서버에서 가져온 사용자 ID와 캐시된 사용자 ID 비교 (디버깅용)
+        const cached = window.sessionStorage.getItem(this._cacheKey);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            const cachedUserId = parsed?.user?.id;
+            const currentUserId = res?.user?.id;
+            
+            // 사용자 ID가 다르면 로그 출력 (다른 사용자로 로그인한 경우)
+            if (cachedUserId && currentUserId && cachedUserId !== currentUserId) {
+              console.log('[Auth] 사용자 변경 감지:', {
+                cachedUserId,
+                currentUserId,
+                note: '이전 사용자 정보가 캐시에 남아있었습니다. 최신 정보로 업데이트합니다.'
+              });
+            }
+          } catch (e) {
+            // 캐시 파싱 실패는 무시
+          }
+        }
+        
         window.sessionStorage.setItem(this._cacheKey, JSON.stringify(res));
       } catch (e) {
         console.warn('[Auth] bootstrap 캐시 저장 실패:', e);
