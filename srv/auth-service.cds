@@ -69,22 +69,15 @@ service AuthService @(
     retryAfterDays : Integer;
   }
 
+
+
   action RequestAccessMail(email: String, name: String) returns AccessRequestResult;
 
-  // 역할 부여 확인 및 USER_STATUS 변경
-  type ApproveAccessResult {
-    ok      : Boolean;
-    code    : String(30);
-    message : String(255);
-  }
-
-  action ApproveAccess(userId: String) returns ApproveAccessResult;
-
-  // 테넌트 초기 설정 제출
+  // 테넌트 초기 설정 제출용
   type LogoInput {
-    logoBase64     : LargeString;  // base64 인코딩된 이미지 데이터 (선택)
-    logoContentType: String(100);  // image/png, image/jpeg 등
-    logoFilename   : String(255);  // 원본 파일명
+    logoBase64     : LargeString;
+    logoContentType: String(100);
+    logoFilename   : String(255);
   }
 
   type TenantConfigInput {
@@ -92,10 +85,10 @@ service AuthService @(
     companyLogoUrl   : String(500);
     timezone         : String(80);
     language         : String(10);
-    adminEmail       : String(200);  // ADMIN의 권한 요청 수신 이메일
-    btpCockpitUrl    : String(500);   // BTP Cockpit URL (선택사항, 없으면 자동 생성)
-    appRouterUrl     : String(500);   // AppRouter URL (Consumer 또는 Provider) - 프론트엔드에서 window.location.origin 전달
-    logo             : LogoInput;     // 로고 업로드 (선택사항, JavaScript에서 null 체크)
+    adminEmail       : String(200);
+    btpCockpitUrl    : String(500);
+    appRouterUrl     : String(500);
+    logo             : LogoInput;
   }
 
   type TenantConfigResult {
@@ -105,9 +98,6 @@ service AuthService @(
   }
 
   action SubmitTenantConfig(config: TenantConfigInput) returns TenantConfigResult;
-
-  // 환경 설정 완료 처리 (HTML 반환)
-  action SetEnvConfigured(tenant: String);
 
   // 로고 업로드
   type UploadLogoInput {

@@ -53,14 +53,13 @@ function buildQuery(params) {
 }
 
 // -------------------------------------------------------
-// 전역 인증 관리자 (AOP 방식으로 401 처리)
+// 전역 인증 관리자 (팝업 방식)
 // -------------------------------------------------------
 class AuthManager {
   constructor() {
     this.pendingRequests = []; // 실패한 요청 큐
     this.isAuthenticating = false; // 인증 진행 중 플래그
     this.authWindow = null; // 인증 창 참조
-    this.listeners = []; // 인증 완료 리스너
     this.setupMessageListener();
   }
 
@@ -72,7 +71,7 @@ class AuthManager {
         resolve,
         reject
       });
-      
+
       // 첫 번째 요청이면 인증 시작
       if (!this.isAuthenticating) {
         this.startAuthentication();
@@ -83,45 +82,44 @@ class AuthManager {
   // 인증 시작
   startAuthentication() {
     if (this.isAuthenticating) return;
-    
+
     this.isAuthenticating = true;
-    const authUrl = window.location.origin + window.location.pathname;
-    
-    // 새 탭에서 인증 창 열기
+
+    // 현재 URL로 팝업을 띄움 (AppRouter가 세션 없음을 감지하고 로그인 페이지로 리다이렉트)
+    const authUrl = window.location.href;
+
+    // 새 탭/창에서 인증 창 열기
     this.authWindow = window.open(
       authUrl,
-      'authWindow',
+      'auth_popup', // 창 이름 지정 (App.js에서 감지용)
       'width=800,height=600,scrollbars=yes,resizable=yes'
     );
-    
+
     if (!this.authWindow) {
-      // 팝업이 차단된 경우 현재 탭에서 리다이렉트
-      console.warn('[AuthManager] 팝업이 차단되었습니다. 현재 탭에서 인증을 진행합니다.');
-      window.location.href = authUrl;
+      // 팝업이 차단된 경우
+      console.warn('[AuthManager] 팝업이 차단되었습니다. 사용자에게 알림이 필요합니다.');
+      alert('세션이 만료되었습니다. 팝업 차단을 해제하고 다시 시도해주세요.');
+      this.isAuthenticating = false;
       return;
     }
-    
-    // 새 탭이 닫혔는지 확인
+
+    // 팝업이 닫혔는지 주기적으로 확인 (사용자가 그냥 닫아버린 경우 대비)
     const checkClosed = setInterval(() => {
       if (this.authWindow && this.authWindow.closed) {
         clearInterval(checkClosed);
-        // 새 탭이 닫혔으면 인증이 완료되었을 가능성이 높음
-        setTimeout(() => {
-          this.onAuthComplete();
-        }, 1000);
+        // 팝업이 닫혔는데 아직 인증 완료 처리가 안됐다면 실패 처리할 수도 있음
+        // 하지만 여기서는 사용자가 로그인을 완료하고 팝업이 스스로 닫힌 경우를 가정
+        // (postMessage 핸들러가 처리함)
       }
-    }, 500);
+    }, 1000);
   }
 
-  // 메시지 리스너 설정 (한 번만)
+  // 메시지 리스너 설정
   setupMessageListener() {
-    if (this.messageListenerSetup) return;
-    this.messageListenerSetup = true;
-    
     window.addEventListener('message', (event) => {
       // 보안: 같은 origin에서만 메시지 수신
       if (event.origin !== window.location.origin) return;
-      
+
       if (event.data === 'auth-complete') {
         console.log('[AuthManager] 인증 완료 메시지를 받았습니다.');
         this.onAuthComplete();
@@ -131,146 +129,69 @@ class AuthManager {
 
   // 인증 완료 처리
   async onAuthComplete() {
-    console.log('[AuthManager] 인증이 완료되었습니다. 대기 중인 요청들을 재시도합니다.');
-    
+    console.log('[AuthManager] 인증 완료. 대기 중인 요청들을 재시도합니다.');
+
     this.isAuthenticating = false;
-    if (this.authWindow) {
-      this.authWindow.close();
-      this.authWindow = null;
-    }
-    
-    // 잠시 대기 (세션 쿠키가 브라우저에 설정될 시간)
+
+    // 잠시 대기 (쿠키 전파 시간)
     await new Promise(resolve => setTimeout(resolve, 500));
-    
+
     // 대기 중인 요청들을 재시도
     const requests = [...this.pendingRequests];
     this.pendingRequests = [];
-    
+
     for (const request of requests) {
       try {
-        // CSRF 토큰 갱신 (POST, PUT, PATCH, DELETE 메서드인 경우)
-        const headers = { ...request.headers };
+        // CSRF 토큰 갱신 (POST/PUT/PATCH/DELETE)
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
           try {
-            // baseUrl이 있으면 사용, 없으면 URL에서 추출
-            let baseUrl = request.baseUrl;
-            if (!baseUrl) {
-              // URL에서 baseUrl 추출 (예: /odata/v4/auth/Bootstrap() -> /odata/v4/auth)
-              const urlObj = new URL(request.url, window.location.origin);
-              const pathParts = urlObj.pathname.split('/').filter(Boolean);
-              // odata/v4/auth 같은 경로까지 추출
-              let basePath = '';
-              if (pathParts.length >= 2) {
-                basePath = '/' + pathParts.slice(0, 3).join('/'); // odata/v4/service
-              } else {
-                basePath = urlObj.pathname;
-              }
-              baseUrl = urlObj.origin + basePath;
-            } else {
-              // baseUrl이 상대 경로인 경우 절대 경로로 변환
-              if (!baseUrl.startsWith('http')) {
-                baseUrl = window.location.origin + (baseUrl.startsWith('/') ? baseUrl : '/' + baseUrl);
-              }
-            }
-            
-            // CSRF 토큰 가져오기
+            // CSRF Fetch
+            let baseUrl = request.baseUrl || window.location.origin;
             const csrfRes = await fetch(baseUrl, {
-              method: 'GET',
+              method: 'HEAD',
               headers: { 'x-csrf-token': 'Fetch' },
-              credentials: 'include' // 쿠키 포함
+              credentials: 'include'
             });
-            const csrfToken = csrfRes.headers.get('x-csrf-token');
-            if (csrfToken) {
-              headers['x-csrf-token'] = csrfToken;
+            const newToken = csrfRes.headers.get('x-csrf-token');
+            if (newToken) {
+              request.headers = request.headers || {};
+              request.headers['x-csrf-token'] = newToken;
             }
           } catch (e) {
-            console.warn('[AuthManager] CSRF 토큰 갱신 실패:', e);
+            console.warn('[AuthManager] CSRF refresh failed', e);
           }
         }
-        
-        // 요청 재시도 (credentials: 'include'로 쿠키 포함)
+
+        // 요청 재시도
         const response = await fetch(request.url, {
           method: request.method,
-          headers,
+          headers: request.headers,
           body: request.body,
-          credentials: 'include' // 세션 쿠키 포함
+          credentials: 'include'
         });
-        
+
         if (response.ok) {
-          // 응답 본문이 있는 경우에만 파싱
+          // 성공
           const contentType = response.headers.get('content-type') || '';
           if (contentType.includes('application/json')) {
-            try {
-              const text = await response.text();
-              const data = text ? JSON.parse(text) : {};
-              request.resolve(data);
-            } catch (e) {
-              // JSON 파싱 실패 시 빈 객체 반환
-              request.resolve({});
-            }
+            const data = await response.json().catch(() => ({}));
+            request.resolve(data);
           } else {
-            // JSON이 아니면 빈 객체 반환 (DELETE 등)
             request.resolve({});
           }
-        } else if (response.status === 401) {
-          // 여전히 401이면 다시 큐에 추가
-          console.warn('[AuthManager] 재시도 후에도 401 에러 발생. 다시 인증을 시작합니다.');
-          this.pendingRequests.push(request);
-          // 인증 다시 시작
-          if (!this.isAuthenticating) {
-            this.startAuthentication();
-          }
         } else {
-          // 응답 본문 읽기 시도
-          let errorData = {};
-          try {
-            const text = await response.text();
-            if (text) {
-              errorData = JSON.parse(text);
-            }
-          } catch (e) {
-            // 파싱 실패는 무시
-          }
-          
-          const error = new Error(`[재시도] ${response.status} ${response.statusText}`);
-          error.status = response.status;
-          error.statusText = response.statusText;
-          error.data = errorData;
-          request.reject(error);
+          // 또 실패?
+          request.reject(new Error(`[Retry] ${response.status} ${response.statusText}`));
         }
       } catch (error) {
         request.reject(error);
       }
     }
-    
-    // 리스너들에게 알림
-    this.listeners.forEach(listener => {
-      try {
-        listener();
-      } catch (e) {
-        console.warn('[AuthManager] 리스너 실행 중 오류:', e);
-      }
-    });
-  }
-
-  // 인증 완료 리스너 등록
-  onAuthCompleteListener(callback) {
-    this.listeners.push(callback);
-    return () => {
-      const index = this.listeners.indexOf(callback);
-      if (index > -1) {
-        this.listeners.splice(index, 1);
-      }
-    };
   }
 }
 
-// 전역 인증 관리자 인스턴스 (싱글톤)
 const globalAuthManager = new AuthManager();
 
-// -------------------------------------------------------
-// OData V4 Client (CAP/AppRouter 전제)
-// -------------------------------------------------------
 export class ODataClient {
   constructor(baseUrl) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -391,18 +312,19 @@ export class ODataClient {
     return `(${parts.join(',')})`;
   }
 
+
+
+
   // 401 Unauthorized 처리: 전역 인증 관리자를 통해 처리
   async handleUnauthorized(res, operation, requestInfo) {
     if (res.status === 401) {
-      console.warn(`[ODataClient] 401 Unauthorized (${operation}) - 세션이 만료되었습니다. 전역 인증 관리자를 통해 처리합니다.`);
-      
-      // baseUrl도 함께 전달 (CSRF 토큰 갱신용)
+      console.warn(`[ODataClient] 401 Unauthorized (${operation}) - 팝업 인증을 시도합니다.`);
+
       const requestInfoWithBase = {
         ...requestInfo,
         baseUrl: this.baseUrl
       };
-      
-      // 요청 정보를 큐에 추가하고 인증 완료를 기다림
+
       return globalAuthManager.queueRequest(requestInfoWithBase);
     }
     return null;
@@ -450,7 +372,7 @@ export class ODataClient {
     const url = `${this.baseUrl}/${entitySet}`;
     const headers = { 'Content-Type': 'application/json' };
     const body = JSON.stringify(data);
-    
+
     // CSRF 토큰 추가
     try {
       const csrfToken = await this.ensureCsrf();
@@ -460,13 +382,13 @@ export class ODataClient {
     } catch (e) {
       console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
     }
-    
+
     const res = await this.fetch(url, {
       method: 'POST',
       headers,
       body
     });
-    
+
     if (!res.ok) {
       if (res.status === 401) {
         const retry = await this.handleUnauthorized(res, `CREATE ${entitySet}`, {
@@ -489,7 +411,7 @@ export class ODataClient {
       ...(opts?.etag ? { 'If-Match': opts.etag } : { 'If-Match': '*' })
     };
     const body = JSON.stringify(data);
-    
+
     // CSRF 토큰 추가
     try {
       const csrfToken = await this.ensureCsrf();
@@ -499,13 +421,13 @@ export class ODataClient {
     } catch (e) {
       console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
     }
-    
+
     const res = await this.fetch(url, {
       method: 'PATCH',
       headers,
       body
     });
-    
+
     if (!res.ok) {
       if (res.status === 401) {
         const retry = await this.handleUnauthorized(res, `UPDATE ${entitySet}`, {
@@ -526,7 +448,7 @@ export class ODataClient {
     const headers = {
       ...(opts?.etag ? { 'If-Match': opts.etag } : { 'If-Match': '*' })
     };
-    
+
     // CSRF 토큰 추가
     try {
       const csrfToken = await this.ensureCsrf();
@@ -536,12 +458,12 @@ export class ODataClient {
     } catch (e) {
       console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
     }
-    
+
     const res = await this.fetch(url, {
       method: 'DELETE',
       headers
     });
-    
+
     if (!res.ok) {
       if (res.status === 401) {
         const retry = await this.handleUnauthorized(res, `DELETE ${entitySet}`, {
@@ -562,7 +484,7 @@ export class ODataClient {
     const url = join(this.baseUrl, `${path}${qs}`);
     const headers = payload ? { 'Content-Type': 'application/json' } : {};
     const body = payload ? JSON.stringify(payload) : undefined;
-    
+
     // CSRF 토큰 추가 (POST, PUT, PATCH, DELETE 메서드인 경우)
     if (method !== 'GET' && method !== 'HEAD') {
       try {
@@ -574,7 +496,7 @@ export class ODataClient {
         console.warn('[ODataClient] CSRF 토큰 확보 실패:', e?.message);
       }
     }
-    
+
     const res = await this.fetch(url, {
       method,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
@@ -584,12 +506,12 @@ export class ODataClient {
     // 응답이 JSON인지 확인
     const contentType = res.headers.get('content-type') || '';
     let json = {};
-    
+
     // Response 스트림은 한 번만 읽을 수 있으므로, text()로 읽어서 처리
     try {
       // res.json() 대신 res.text()를 사용하여 Readable 스트림 문제 방지
       const text = await res.text();
-      
+
       if (text && text.trim()) {
         try {
           // 텍스트를 JSON으로 파싱
@@ -623,7 +545,7 @@ export class ODataClient {
         });
         if (retry) return retry;
       }
-      
+
       const err = new Error(`[CALL ${path}] ${res.status} ${res.statusText}`);
       err.status = res.status;
       err.statusText = res.statusText;
@@ -651,70 +573,29 @@ export class GenericModel {
 export class AuthModel {
   constructor(client) {
     this.base = new GenericModel(client);
-    this._cacheKey = 'workhub.auth.bootstrap';
+    // ✅ sessionStorage 캐시를 사용하지 않으므로 _cacheKey 제거
   }
 
   async bootstrap(options = {}) {
-    // 기본값을 true로 변경: 항상 최신 사용자 정보를 가져오도록
-    const { force = true } = options;
-
-    const hasSession =
-      typeof window !== 'undefined' && typeof window.sessionStorage !== 'undefined';
-
-    if (!force && hasSession) {
-      const cached = window.sessionStorage.getItem(this._cacheKey);
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          return parsed;
-        } catch (e) {
-          console.warn('[Auth] bootstrap 캐시 파싱 실패, 무시:', e);
-        }
-      }
-    }
+    // ✅ sessionStorage 캐시 완전 제거
+    // 항상 서버에서 최신 인증 상태를 확인하도록 변경
+    // BTP에서 로그아웃하면 모든 앱에서 인증이 안 되어야 하므로 캐시 사용 안 함
 
     // CAP function 호출 시 괄호 필요: Bootstrap() 형식
+    // 서버에서 직접 가져오므로 항상 최신 인증 상태 반영
     const res = await this.base.call('Bootstrap()', undefined, 'GET');
-
-    if (hasSession) {
-      try {
-        // 서버에서 가져온 사용자 ID와 캐시된 사용자 ID 비교 (디버깅용)
-        const cached = window.sessionStorage.getItem(this._cacheKey);
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
-            const cachedUserId = parsed?.user?.id;
-            const currentUserId = res?.user?.id;
-            
-            // 사용자 ID가 다르면 로그 출력 (다른 사용자로 로그인한 경우)
-            if (cachedUserId && currentUserId && cachedUserId !== currentUserId) {
-              console.log('[Auth] 사용자 변경 감지:', {
-                cachedUserId,
-                currentUserId,
-                note: '이전 사용자 정보가 캐시에 남아있었습니다. 최신 정보로 업데이트합니다.'
-              });
-            }
-          } catch (e) {
-            // 캐시 파싱 실패는 무시
-          }
-        }
-        
-        window.sessionStorage.setItem(this._cacheKey, JSON.stringify(res));
-      } catch (e) {
-        console.warn('[Auth] bootstrap 캐시 저장 실패:', e);
-      }
-    }
 
     return res;
   }
 
   clearCache() {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      window.sessionStorage.removeItem(this._cacheKey);
-    }
+    // sessionStorage 캐시를 사용하지 않으므로 아무것도 하지 않음
+    // 호환성을 위해 메서드는 유지
   }
 
   async resetSession() {
+    // resetSession은 서버 측 세션 초기화용
+    // 클라이언트 측 캐시는 사용하지 않으므로 clearCache() 호출만
     const res = await this.base.call('ResetSession()', undefined, 'GET');
     this.clearCache();
     return res;
@@ -729,8 +610,7 @@ export class AuthModel {
   async submitTenantConfig(config) {
     const payload = { config };
     const res = await this.base.call('SubmitTenantConfig', payload, 'POST');
-    // 설정이 변경되었으므로 캐시 초기화
-    this.clearCache();
+    // 캐시를 사용하지 않으므로 clearCache() 호출 불필요
     return res;
   }
 
@@ -749,16 +629,16 @@ export class AuthModel {
     try {
       // CAP function 호출: GetLogo() 형식
       const res = await this.base.call('GetLogo()', undefined, 'GET');
-      
+
       // 응답이 올바른 형식인지 확인
       if (!res || typeof res !== 'object') {
         throw new Error('로고 조회 실패: 잘못된 응답 형식');
       }
-      
+
       if (!res.ok) {
         throw new Error(res.message || '로고를 가져올 수 없습니다.');
       }
-      
+
       // base64 data URI 반환
       return res.logoBase64 || null;
     } catch (error) {
@@ -804,7 +684,7 @@ export function ModelProvider({ children, factories }) {
         cache.set(name, factory());
       }
       return cache.get(name);
-    } 
+    }
   }), [mergedFactories]);
 
   return <ModelContext.Provider value={api}>{children}</ModelContext.Provider>;

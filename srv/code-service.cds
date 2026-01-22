@@ -1,7 +1,11 @@
 using {workhub as WorkHubDB} from '../db/Code';
 
 service CodeService @(
-    path: '/odata/v4/code'
+    path: '/odata/v4/code',
+    restrict: [{
+        grant: 'READ',
+        to: 'authenticated-user'
+    }]
 ) {
     @cds.redirection.target
     entity CodeGroup as projection on WorkHubDB.CodeGroup;

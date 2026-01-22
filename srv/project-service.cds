@@ -2,7 +2,11 @@ using {workhub as WorkHubDB} from '../db/Project';
 
 service ProjectService @(
     path: '/odata/v4/project',
-    impl: './project-service.js'
+    impl: './project-service.js',
+    restrict: [{
+        grant: '*',
+        to: 'WorkHub_User'
+    }]
 ) {
 
     /** ─────────────────────────────

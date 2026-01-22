@@ -171,7 +171,7 @@ export default function App() {
   const handleSetupComplete = useCallback(async () => {
     // 설정 완료 후 Bootstrap 다시 호출하여 isConfigured 업데이트
     try {
-      const data = await auth.bootstrap({ force: true });
+        const data = await auth.bootstrap();
       setBoot(data);
       setShowSetupWizard(false);
       // 설정이 완료되면 바로 웰컴페이지로 이동
@@ -182,41 +182,16 @@ export default function App() {
     }
   }, [auth]);
 
-  const handleLogout = useCallback(async () => {
-    try {
-      await auth.resetSession();
-    } catch (e) {
-      console.warn('[Auth] ResetSession 실패 (무시 가능):', e);
-    }
-
-    try {
-      auth.clearCache?.();
-
-      if (typeof window !== 'undefined') {
-        const ss = window.sessionStorage;
-        const ls = window.localStorage;
-
-        if (me?.id) {
-          const key = getWelcomerKey(me.id);
-          ls.removeItem(key);
-        }
-
-        Object.keys(ss)
-          .filter((k) => k.startsWith('workhub.'))
-          .forEach((k) => ss.removeItem(k));
-
-        Object.keys(ls)
-          .filter((k) => k.startsWith('workhub.'))
-          .forEach((k) => ls.removeItem(k));
-      }
-    } catch (e) {
-      console.warn('[Auth] 스토리지 정리 중 오류:', e);
-    }
-
+  const handleLogout = useCallback(() => {
+    // ✅ 앱 내 자체 로그아웃 기능 제거
+    // BTP/XSUAA 로그아웃만 사용하도록 변경
+    // AppRouter의 /logout 엔드포인트로 리다이렉트 (XSUAA가 자동으로 처리)
     if (typeof window !== 'undefined') {
-      window.location.href = '/logout.html';
+      // BTP 로그아웃: AppRouter의 /logout 엔드포인트 사용
+      // 이렇게 하면 XSUAA 세션이 완전히 종료되고 모든 앱에서 로그아웃됨
+      window.location.href = '/logout';
     }
-  }, [auth, me]);
+  }, []);
 
   // URL 해시에서 approve-access 경로 체크 (bootstrap 전에도 접근 가능)
   const [isApproveAccessPath, setIsApproveAccessPath] = useState(false);

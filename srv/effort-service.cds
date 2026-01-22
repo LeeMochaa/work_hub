@@ -2,7 +2,11 @@ using {workhub as WorkHubDB} from '../db/Effort';
 
 service EffortService @(
     path: '/odata/v4/effort',
-    impl: './effort-service.js'
+    impl: './effort-service.js',
+    restrict: [{
+        grant: '*',
+        to: 'WorkHub_User'
+    }]
 ) {
 
     @cds.redirection.target

@@ -2,7 +2,11 @@ using {workhub as WorkHubDB} from '../db/Task';
 
 service TaskService @(
     path: '/odata/v4/task',
-    impl: './task-service.js'
+    impl: './task-service.js',
+    restrict: [{
+        grant: '*',
+        to: 'WorkHub_User'
+    }]
 ) {
 
     @cds.redirection.target

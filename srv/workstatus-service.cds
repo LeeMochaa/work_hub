@@ -2,7 +2,11 @@ using {workhub as WorkHubDB} from '../db/WorkStatus';
 
 service WorkStatusService @(
     path: '/odata/v4/workstatus',
-    impl: './workstatus-service.js'
+    impl: './workstatus-service.js',
+    restrict: [{
+        grant: '*',
+        to: 'WorkHub_User'
+    }]
 ) {
 
     @cds.redirection.target

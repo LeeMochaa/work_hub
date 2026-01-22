@@ -3,7 +3,11 @@ using {workhub as MonthlyClosingDB} from '../db/MonthlyClosing';
 
 service ClosingService @(
     path: '/odata/v4/closing',
-    impl: './closing-service.js'
+    impl: './closing-service.js',
+    restrict: [{
+        grant: '*',
+        to: 'WorkHub_User'
+    }]
 ) {
 
     @cds.redirection.target
