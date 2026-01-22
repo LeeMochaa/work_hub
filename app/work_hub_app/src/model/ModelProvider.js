@@ -229,6 +229,19 @@ export class ODataClient {
         credentials: 'include'
       });
 
+      // 401 Unauthorized 또는 HTML 응답(로그인 페이지 리다이렉트) 감지
+      if (res.status === 401 || (res.ok && res.headers.get('content-type')?.includes('text/html'))) {
+        console.warn(`[ODataClient] Auth Fail detected: ${res.status} or HTML response`);
+        try {
+          // HTML 응답은 401로 간주하여 처리
+          // 재시도 로직을 위해 여기서 바로 handleUnauthorized 호출 안 함 (메서드별로 처리)
+          // 단, fetch 내부에서 재시도하려면 구조가 복잡해지므로,
+          // 상위 메서드(select, call 등)에서 처리하도록 여기서는 그대로 반환하거나
+          // fetch 레벨에서 처리할 수도 있음.
+          // 여기서는 상위 메서드에서 일괄 처리하도록 둠.
+        } catch (e) { }
+      }
+
       // 403 Forbidden이면 CSRF 토큰 문제일 수 있으므로 재시도
       if (res.status === 403) {
         try {
@@ -315,10 +328,12 @@ export class ODataClient {
 
 
 
-  // 401 Unauthorized 처리: 전역 인증 관리자를 통해 처리
+  // 401 Unauthorized 또는 HTML(로그인 페이지) 처리
   async handleUnauthorized(res, operation, requestInfo) {
-    if (res.status === 401) {
-      console.warn(`[ODataClient] 401 Unauthorized (${operation}) - 팝업 인증을 시도합니다.`);
+    const isHtml = res.headers.get('content-type')?.includes('text/html');
+
+    if (res.status === 401 || (res.ok && isHtml)) {
+      console.warn(`[ODataClient] Auth Fail (${operation}) - 팝업 인증을 시도합니다. (Status: ${res.status}, HTML: ${isHtml})`);
 
       const requestInfoWithBase = {
         ...requestInfo,
@@ -334,8 +349,8 @@ export class ODataClient {
     const qs = buildQuery(options);
     const url = join(this.baseUrl, `${entitySet}${qs}`);
     const res = await this.fetch(url);
-    if (!res.ok) {
-      if (res.status === 401) {
+    if (!res.ok || res.headers.get('content-type')?.includes('text/html')) {
+      if (res.status === 401 || (res.ok && res.headers.get('content-type')?.includes('text/html'))) {
         const retry = await this.handleUnauthorized(res, `SELECT ${entitySet}`, {
           url,
           method: 'GET',
@@ -353,8 +368,8 @@ export class ODataClient {
     const qs = buildQuery(options);
     const url = `${this.baseUrl}/${entitySet}${this.keyPredicate(key)}${qs}`;
     const res = await this.fetch(url);
-    if (!res.ok) {
-      if (res.status === 401) {
+    if (!res.ok || res.headers.get('content-type')?.includes('text/html')) {
+      if (res.status === 401 || (res.ok && res.headers.get('content-type')?.includes('text/html'))) {
         const retry = await this.handleUnauthorized(res, `GET ${entitySet}`, {
           url,
           method: 'GET',
@@ -389,8 +404,8 @@ export class ODataClient {
       body
     });
 
-    if (!res.ok) {
-      if (res.status === 401) {
+    if (!res.ok || res.headers.get('content-type')?.includes('text/html')) {
+      if (res.status === 401 || (res.ok && res.headers.get('content-type')?.includes('text/html'))) {
         const retry = await this.handleUnauthorized(res, `CREATE ${entitySet}`, {
           url,
           method: 'POST',
@@ -428,8 +443,8 @@ export class ODataClient {
       body
     });
 
-    if (!res.ok) {
-      if (res.status === 401) {
+    if (!res.ok || res.headers.get('content-type')?.includes('text/html')) {
+      if (res.status === 401 || (res.ok && res.headers.get('content-type')?.includes('text/html'))) {
         const retry = await this.handleUnauthorized(res, `UPDATE ${entitySet}`, {
           url,
           method: 'PATCH',
@@ -464,8 +479,8 @@ export class ODataClient {
       headers
     });
 
-    if (!res.ok) {
-      if (res.status === 401) {
+    if (!res.ok || res.headers.get('content-type')?.includes('text/html')) {
+      if (res.status === 401 || (res.ok && res.headers.get('content-type')?.includes('text/html'))) {
         const retry = await this.handleUnauthorized(res, `DELETE ${entitySet}`, {
           url,
           method: 'DELETE',
@@ -512,7 +527,10 @@ export class ODataClient {
       // res.json() 대신 res.text()를 사용하여 Readable 스트림 문제 방지
       const text = await res.text();
 
-      if (text && text.trim()) {
+      // HTML 응답이면 JSON 파싱 시도하지 않음 (로그인 페이지 등)
+      if (contentType.includes('text/html')) {
+        json = { raw: text };
+      } else if (text && text.trim()) {
         try {
           // 텍스트를 JSON으로 파싱
           json = JSON.parse(text);
@@ -535,8 +553,8 @@ export class ODataClient {
       // 오류가 발생해도 빈 객체로 진행 (상태 코드로 판단)
     }
 
-    if (!res.ok) {
-      if (res.status === 401) {
+    if (!res.ok || res.headers.get('content-type')?.includes('text/html')) {
+      if (res.status === 401 || (res.ok && res.headers.get('content-type')?.includes('text/html'))) {
         const retry = await this.handleUnauthorized(res, `CALL ${path}`, {
           url,
           method,
